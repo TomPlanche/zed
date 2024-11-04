@@ -2076,6 +2076,9 @@ Run the `theme selector: toggle` action in the command palette to see a current 
     },
     "indent_guides": {
       "show": "always"
+    },
+    "sort": {
+      "strategy": "lexicographical"
     }
   }
 }

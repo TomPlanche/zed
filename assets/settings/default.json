@@ -380,6 +380,9 @@
       // 2. Never show indent guides:
       //    "never"
       "show": "always"
+    },
+    "sort": {
+      "strategy": "lexicographical"
     }
   },
   "outline_panel": {

@@ -18,6 +18,17 @@ pub enum ShowIndentGuides {
     Never,
 }
 
+#[derive(Deserialize, Clone, Copy, PartialEq, Serialize, Debug, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SortStrategy {
+    Alphabetical = 0,
+    Lexicographical = 1,
+    // Add more strategies here as needed
+    // Natural = 2,
+    // CaseInsensitive = 3,
+    // etc.
+}
+
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
 pub struct ProjectPanelSettings {
     pub button: bool,
@@ -31,11 +42,21 @@ pub struct ProjectPanelSettings {
     pub auto_reveal_entries: bool,
     pub auto_fold_dirs: bool,
     pub scrollbar: ScrollbarSettings,
+    pub sort: SortSettings,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct IndentGuidesSettings {
     pub show: ShowIndentGuides,
+}
+
+#[derive(Deserialize, Clone, Copy, PartialEq, Serialize, Debug, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SortSettings {
+    /// Sorting strategy for project panel entries.
+    ///
+    /// Default: Alphabetical
+    pub strategy: SortStrategy,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -105,6 +126,9 @@ pub struct ProjectPanelSettingsContent {
     pub scrollbar: Option<ScrollbarSettingsContent>,
     /// Settings related to indent guides in the project panel.
     pub indent_guides: Option<IndentGuidesSettingsContent>,
+    /// Sorting strategy for project panel entries.
+    /// Default: { "strategy": "alphabetical"}
+    pub sort: Option<SortSettings>,
 }
 
 impl Settings for ProjectPanelSettings {
