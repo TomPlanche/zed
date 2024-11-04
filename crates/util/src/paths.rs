@@ -9,6 +9,8 @@ use std::{
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use sort_strategies::SortStrategy;
+use crate::NumericPrefixWithSuffix;
 
 /// Returns the path to the user's home directory.
 pub fn home_dir() -> &'static PathBuf {
@@ -431,6 +433,77 @@ pub fn compare_paths(
 
                     match (path_string_a, path_string_b) {
                         (Some(a), Some(b)) => sort_filenames(&a, &b),
+                        (Some(_), None) => Ordering::Greater,
+                        (None, Some(_)) => Ordering::Less,
+                        (None, None) => Ordering::Equal,
+                    }
+                });
+
+                if !ordering.is_eq() {
+                    return ordering;
+                }
+            }
+            (Some(_), None) => break cmp::Ordering::Greater,
+            (None, Some(_)) => break cmp::Ordering::Less,
+            (None, None) => break cmp::Ordering::Equal,
+        }
+    }
+}
+
+
+pub fn compare_paths_with_strategy(
+    (path_a, a_is_file): (&Path, bool),
+    (path_b, b_is_file): (&Path, bool),
+    strategy: SortStrategy,
+) -> cmp::Ordering {
+    let mut components_a = path_a.components().peekable();
+    let mut components_b = path_b.components().peekable();
+
+    loop {
+        match (components_a.next(), components_b.next()) {
+            (Some(component_a), Some(component_b)) => {
+                let a_is_file = components_a.peek().is_none() && a_is_file;
+                let b_is_file = components_b.peek().is_none() && b_is_file;
+
+                let ordering = a_is_file.cmp(&b_is_file).then_with(|| {
+                    let path_a = Path::new(component_a.as_os_str());
+                    let path_string_a = if a_is_file {
+                        path_a.file_stem()
+                    } else {
+                        path_a.file_name()
+                    }
+                    .map(|s| s.to_string_lossy());
+
+                    let path_b = Path::new(component_b.as_os_str());
+                    let path_string_b = if b_is_file {
+                        path_b.file_stem()
+                    } else {
+                        path_b.file_name()
+                    }
+                    .map(|s| s.to_string_lossy());
+
+                    match (path_string_a, path_string_b) {
+                        (Some(a), Some(b)) => match strategy {
+                            SortStrategy::Alphabetical => sort_filenames(&a, &b),
+                            SortStrategy::AlphabeticalReversed => sort_filenames(&b, &a),
+                            SortStrategy::Lexicographical => {
+                                let num_and_remainder_a =
+                                    NumericPrefixWithSuffix::from_numeric_prefixed_str(&a);
+                                let num_and_remainder_b =
+                                    NumericPrefixWithSuffix::from_numeric_prefixed_str(&b);
+                                
+                                num_and_remainder_a.cmp(&num_and_remainder_b)
+                            },
+                            SortStrategy::LexicographicalReversed => {
+
+                                let num_and_remainder_a =
+                                    NumericPrefixWithSuffix::from_numeric_prefixed_str(&a);
+                                let num_and_remainder_b =
+                                    NumericPrefixWithSuffix::from_numeric_prefixed_str(&b);
+
+                                num_and_remainder_b.cmp(&num_and_remainder_a)
+                            }
+                        },
                         (Some(_), None) => Ordering::Greater,
                         (None, Some(_)) => Ordering::Less,
                         (None, None) => Ordering::Equal,

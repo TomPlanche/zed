@@ -3,6 +3,7 @@ use gpui::Pixels;
 use schemars::JsonSchema;
 use serde_derive::{Deserialize, Serialize};
 use settings::{Settings, SettingsSources};
+use sort_strategies::SortStrategy;
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, Copy, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -16,17 +17,6 @@ pub enum ProjectPanelDockPosition {
 pub enum ShowIndentGuides {
     Always,
     Never,
-}
-
-#[derive(Deserialize, Clone, Copy, PartialEq, Serialize, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SortStrategy {
-    Alphabetical = 0,
-    Lexicographical = 1,
-    // Add more strategies here as needed
-    // Natural = 2,
-    // CaseInsensitive = 3,
-    // etc.
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq)]

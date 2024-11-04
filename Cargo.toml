@@ -99,6 +99,7 @@ members = [
     "crates/snippet",
     "crates/snippet_provider",
     "crates/snippets_ui",
+    "crates/sort_strategies",
     "crates/sqlez",
     "crates/sqlez_macros",
     "crates/story",
@@ -167,7 +168,7 @@ members = [
     # Tooling
     #
 
-    "tooling/xtask",
+    "tooling/xtask", "crates/sort_strategies",
 ]
 default-members = ["crates/zed"]
 
@@ -273,6 +274,7 @@ settings_ui = { path = "crates/settings_ui" }
 snippet = { path = "crates/snippet" }
 snippet_provider = { path = "crates/snippet_provider" }
 snippets_ui = { path = "crates/snippets_ui" }
+sort_strategies = {path = "crates/sort_strategies"}
 sqlez = { path = "crates/sqlez" }
 sqlez_macros = { path = "crates/sqlez_macros" }
 story = { path = "crates/story" }

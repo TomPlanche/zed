@@ -33,6 +33,7 @@ use project::{
 use project_panel_settings::{ProjectPanelDockPosition, ProjectPanelSettings, ShowIndentGuides};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
+use sort_strategies::SortStrategy;
 use std::{
     cell::OnceCell,
     collections::HashSet,
@@ -2002,7 +2003,10 @@ impl ProjectPanel {
             }
 
             snapshot.propagate_git_statuses(&mut visible_worktree_entries);
-            project::sort_worktree_entries(&mut visible_worktree_entries);
+
+            let strategy = ProjectPanelSettings::get_global(cx).sort.strategy;
+            project::sort_worktree_entries_with_strategy(&mut visible_worktree_entries, strategy);
+
             self.visible_entries
                 .push((worktree_id, visible_worktree_entries, OnceCell::new()));
         }

@@ -52,6 +52,7 @@ rand.workspace = true
 regex.workspace = true
 remote.workspace = true
 rpc.workspace = true
+sort_strategies.workspace = true
 schemars.workspace = true
 task.workspace = true
 tempfile.workspace = true
