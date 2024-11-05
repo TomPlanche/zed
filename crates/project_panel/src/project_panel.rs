@@ -48,6 +48,7 @@ use ui::{
     prelude::*, v_flex, ContextMenu, Icon, IndentGuideColors, IndentGuideLayout, KeyBinding, Label,
     ListItem, Tooltip,
 };
+use util::paths::compare_paths_with_strategy;
 use util::{maybe, ResultExt, TryFutureExt};
 use workspace::{
     dock::{DockPosition, Panel, PanelEvent},
@@ -2010,7 +2011,14 @@ impl ProjectPanel {
             snapshot.propagate_git_statuses(&mut visible_worktree_entries);
 
             let strategy = ProjectPanelSettings::get_global(cx).sort.strategy;
-            project::sort_worktree_entries_with_strategy(&mut visible_worktree_entries, strategy);
+
+            visible_worktree_entries.sort_by(|entry_a, entry_b| {
+                compare_paths_with_strategy(
+                    (&entry_a.path, entry_a.is_file()),
+                    (&entry_b.path, entry_b.is_file()),
+                    strategy,
+                )
+            });
 
             self.visible_entries
                 .push((worktree_id, visible_worktree_entries, OnceCell::new()));
@@ -6025,7 +6033,7 @@ mod tests {
     #[gpui::test]
     async fn test_natural_sort_order(cx: &mut gpui::TestAppContext) {
         init_test(cx);
-        
+
         // change project_pannel settings
         cx.update_global::<SettingsStore, _>(|store, cx| {
             store.update_user_settings::<ProjectPanelSettings>(cx, |project_panel_settings| {
@@ -6053,7 +6061,7 @@ mod tests {
                 "a10b1c": "",
             }),
         )
-            .await;
+        .await;
 
         let project = Project::test(fs.clone(), ["/root1".as_ref()], cx).await;
         let workspace = cx.add_window(|cx| Workspace::test_new(project.clone(), cx));

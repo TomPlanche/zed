@@ -36,7 +36,6 @@ use futures::{
     StreamExt,
 };
 
-
 use git::{blame::Blame, repository::GitRepository};
 use gpui::{
     AnyModel, AppContext, AsyncAppContext, BorrowAppContext, Context as _, EventEmitter, Hsla,
@@ -69,7 +68,6 @@ use settings::{InvalidSettingsError, Settings, SettingsLocation, SettingsStore};
 use smol::channel::Receiver;
 use snippet::Snippet;
 use snippet_provider::SnippetProvider;
-use sort_strategies::SortStrategy;
 use std::{
     borrow::Cow,
     ops::Range,
@@ -81,10 +79,7 @@ use std::{
 use task_store::TaskStore;
 use terminals::Terminals;
 use text::{Anchor, BufferId};
-use util::{
-    paths::{compare_paths, compare_paths_with_strategy},
-    ResultExt as _,
-};
+use util::{paths::compare_paths, ResultExt as _};
 use worktree::{CreatedEntry, Snapshot, Traversal};
 use worktree_store::{WorktreeStore, WorktreeStoreEvent};
 
@@ -4288,16 +4283,6 @@ pub fn sort_worktree_entries(entries: &mut [Entry]) {
         compare_paths(
             (&entry_a.path, entry_a.is_file()),
             (&entry_b.path, entry_b.is_file()),
-        )
-    });
-}
-
-pub fn sort_worktree_entries_with_strategy(entries: &mut [Entry], strategy: SortStrategy) {
-    entries.sort_by(|entry_a, entry_b| {
-        compare_paths_with_strategy(
-            (&entry_a.path, entry_a.is_file()),
-            (&entry_b.path, entry_b.is_file()),
-            strategy,
         )
     });
 }
