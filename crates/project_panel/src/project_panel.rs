@@ -33,7 +33,6 @@ use project::{
 use project_panel_settings::{ProjectPanelDockPosition, ProjectPanelSettings, ShowIndentGuides};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use sort_strategies::SortStrategy;
 use std::{
     cell::OnceCell,
     collections::HashSet,
@@ -3516,6 +3515,7 @@ mod tests {
     use settings::SettingsStore;
     use std::path::{Path, PathBuf};
     use ui::Context;
+    use util::paths::SortStrategy;
     use workspace::{
         item::{Item, ProjectItem},
         register_project_item, AppState,
@@ -6038,7 +6038,7 @@ mod tests {
         cx.update_global::<SettingsStore, _>(|store, cx| {
             store.update_user_settings::<ProjectPanelSettings>(cx, |project_panel_settings| {
                 let sort_settings: SortSettings = SortSettings {
-                    strategy: SortStrategy::Alphabetical,
+                    strategy: util::paths::SortStrategy::Alphabetical,
                 };
                 project_panel_settings.sort = Some(sort_settings);
             });

@@ -6,11 +6,11 @@ use std::{
     sync::LazyLock,
 };
 
+use crate::NumericPrefixWithSuffix;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sort_strategies::SortStrategy;
-use crate::NumericPrefixWithSuffix;
 
 /// Returns the path to the user's home directory.
 pub fn home_dir() -> &'static PathBuf {
@@ -450,6 +450,18 @@ pub fn compare_paths(
     }
 }
 
+#[derive(Deserialize, Clone, Copy, PartialEq, Serialize, Debug, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SortStrategy {
+    Alphabetical = 0,
+    AlphabeticalReversed,
+    Lexicographical,
+    LexicographicalReversed,
+    // Add more strategies here as needed
+    // Natural = 2,
+    // CaseInsensitive = 3,
+    // etc.
+}
 
 pub fn compare_paths_with_strategy(
     (path_a, a_is_file): (&Path, bool),
@@ -491,11 +503,10 @@ pub fn compare_paths_with_strategy(
                                     NumericPrefixWithSuffix::from_numeric_prefixed_str(&a);
                                 let num_and_remainder_b =
                                     NumericPrefixWithSuffix::from_numeric_prefixed_str(&b);
-                                
-                                num_and_remainder_a.cmp(&num_and_remainder_b)
-                            },
-                            SortStrategy::LexicographicalReversed => {
 
+                                num_and_remainder_a.cmp(&num_and_remainder_b)
+                            }
+                            SortStrategy::LexicographicalReversed => {
                                 let num_and_remainder_a =
                                     NumericPrefixWithSuffix::from_numeric_prefixed_str(&a);
                                 let num_and_remainder_b =

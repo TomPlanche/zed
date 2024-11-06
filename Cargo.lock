@@ -8903,7 +8903,6 @@ dependencies = [
  "smol",
  "snippet",
  "snippet_provider",
- "sort_strategies",
  "task",
  "tempfile",
  "terminal",
@@ -8940,7 +8939,6 @@ dependencies = [
  "serde_json",
  "settings",
  "smallvec",
- "sort_strategies",
  "theme",
  "ui",
  "util",
@@ -11111,15 +11109,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sort_strategies"
-version = "0.1.0"
-dependencies = [
- "schemars",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "spdx"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13254,9 +13243,9 @@ dependencies = [
  "rand 0.8.5",
  "regex",
  "rust-embed",
+ "schemars",
  "serde",
  "serde_json",
- "sort_strategies",
  "take-until",
  "tempfile",
  "tendril",
