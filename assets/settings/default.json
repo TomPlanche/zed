@@ -390,6 +390,10 @@
       // 2. Never show indent guides:
       //    "never"
       "show": "always"
+    },
+    "sort": {
+      "strategy": "lexicographical",
+      "uppercase_first": true
     }
   },
   "outline_panel": {
