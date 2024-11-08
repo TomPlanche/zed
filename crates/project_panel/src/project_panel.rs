@@ -433,7 +433,7 @@ impl ProjectPanel {
                 _ => {}
             }
         })
-        .detach();
+            .detach();
 
         project_panel
     }
@@ -2042,13 +2042,12 @@ impl ProjectPanel {
 
             snapshot.propagate_git_statuses(&mut visible_worktree_entries);
 
-            let strategy = ProjectPanelSettings::get_global(cx).sort.strategy;
-
+            let sort_settings = ProjectPanelSettings::get_global(cx).sort;
             visible_worktree_entries.sort_by(|entry_a, entry_b| {
                 compare_paths_with_strategy(
                     (&entry_a.path, entry_a.is_file()),
                     (&entry_b.path, entry_b.is_file()),
-                    strategy,
+                    sort_settings,
                 )
             });
 
@@ -2187,9 +2186,9 @@ impl ProjectPanel {
                     }
                 })
             }
-            .log_err()
+                .log_err()
         })
-        .detach();
+            .detach();
     }
 
     fn drag_onto(
@@ -3538,7 +3537,6 @@ impl ClipboardEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project_panel_settings::SortSettings;
     use collections::HashSet;
     use gpui::{Empty, TestAppContext, View, VisualTestContext, WindowHandle};
     use pretty_assertions::assert_eq;

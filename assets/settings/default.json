@@ -392,7 +392,8 @@
       "show": "always"
     },
     "sort": {
-      "strategy": "lexicographical"
+      "strategy": "lexicographical",
+      "uppercase_first": true
     }
   },
   "outline_panel": {

@@ -3,7 +3,7 @@ use gpui::Pixels;
 use schemars::JsonSchema;
 use serde_derive::{Deserialize, Serialize};
 use settings::{Settings, SettingsSources};
-use util::paths::SortStrategy;
+use util::paths::SortSettings;
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, Copy, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -38,15 +38,6 @@ pub struct ProjectPanelSettings {
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct IndentGuidesSettings {
     pub show: ShowIndentGuides,
-}
-
-#[derive(Deserialize, Clone, Copy, PartialEq, Serialize, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct SortSettings {
-    /// Sorting strategy for project panel entries.
-    ///
-    /// Default: Alphabetical
-    pub strategy: SortStrategy,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
