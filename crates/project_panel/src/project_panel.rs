@@ -3545,7 +3545,7 @@ mod tests {
     use settings::SettingsStore;
     use std::path::{Path, PathBuf};
     use ui::Context;
-    use util::paths::SortStrategy;
+    use util::paths::{SortSettings, SortStrategy};
     use workspace::{
         item::{Item, ProjectItem},
         register_project_item, AppState,
@@ -6255,6 +6255,7 @@ mod tests {
 
                     let sort_settings: SortSettings = SortSettings {
                         strategy: SortStrategy::Lexicographical,
+                        uppercase_first: false
                     };
                     project_panel_settings.sort = Some(sort_settings);
                 });
