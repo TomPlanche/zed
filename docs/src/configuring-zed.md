@@ -2095,7 +2095,8 @@ Run the `theme selector: toggle` action in the command palette to see a current 
     },
     "sort": {
       "strategy": "lexicographical",
-      "uppercase_first": true
+      "uppercase_first": true,
+      "file_type": false
     }
   }
 }

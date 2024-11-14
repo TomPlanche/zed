@@ -47,7 +47,7 @@ use ui::{
     prelude::*, v_flex, ContextMenu, Icon, IndentGuideColors, IndentGuideLayout, KeyBinding, Label,
     ListItem, Tooltip,
 };
-use util::paths::compare_paths_with_strategy;
+use util::paths::{compare_file_type, compare_paths_with_strategy};
 use util::{maybe, ResultExt, TryFutureExt};
 use workspace::{
     dock::{DockPosition, Panel, PanelEvent},
@@ -2050,6 +2050,11 @@ impl ProjectPanel {
                     sort_settings,
                 )
             });
+
+            if sort_settings.file_type {
+                visible_worktree_entries
+                    .sort_by(|entry_a, entry_b| compare_file_type(&entry_a.path, &entry_b.path))
+            }
 
             self.visible_entries
                 .push((worktree_id, visible_worktree_entries, OnceCell::new()));
@@ -6255,7 +6260,8 @@ mod tests {
 
                     let sort_settings: SortSettings = SortSettings {
                         strategy: SortStrategy::Lexicographical,
-                        uppercase_first: false
+                        uppercase_first: false,
+                        file_type: false,
                     };
                     project_panel_settings.sort = Some(sort_settings);
                 });
