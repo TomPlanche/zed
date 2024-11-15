@@ -4,8 +4,8 @@ use gpui::{percentage, Animation, AnimationExt, AnyElement, Transformation, View
 use picker::Picker;
 use repl::{
     components::{KernelPickerDelegate, KernelSelector},
-    ExecutionState, JupyterSettings, Kernel, KernelSpecification, KernelStatus, Session,
-    SessionSupport,
+    worktree_id_for_editor, ExecutionState, JupyterSettings, Kernel, KernelSpecification,
+    KernelStatus, Session, SessionSupport,
 };
 use ui::{
     prelude::*, ButtonLike, ContextMenu, IconWithIndicator, Indicator, IntoElement, PopoverMenu,
@@ -30,9 +30,6 @@ struct ReplMenuState {
     status: KernelStatus,
     kernel_name: SharedString,
     kernel_language: SharedString,
-    // TODO: Persist rotation state so the
-    // icon doesn't reset on every state change
-    // current_delta: Duration,
 }
 
 impl QuickActionBar {
@@ -42,6 +39,16 @@ impl QuickActionBar {
         }
 
         let editor = self.active_editor()?;
+
+        let is_local_project = editor
+            .read(cx)
+            .workspace()
+            .map(|workspace| workspace.read(cx).project().read(cx).is_local())
+            .unwrap_or(false);
+
+        if !is_local_project {
+            return None;
+        }
 
         let has_nonempty_selection = {
             editor.update(cx, |this, cx| {
@@ -168,12 +175,6 @@ impl QuickActionBar {
                         },
                     )
                     .separator()
-                    .link(
-                        "Change Kernel",
-                        Box::new(zed_actions::OpenBrowser {
-                            url: format!("{}#change-kernel", ZED_REPL_DOCUMENTATION),
-                        }),
-                    )
                     .custom_entry(
                         move |_cx| {
                             Label::new("Shut Down Kernel")
@@ -280,7 +281,10 @@ impl QuickActionBar {
         let editor = if let Some(editor) = self.active_editor() {
             editor
         } else {
-            // todo!()
+            return div().into_any_element();
+        };
+
+        let Some(worktree_id) = worktree_id_for_editor(editor.downgrade(), cx) else {
             return div().into_any_element();
         };
 
@@ -303,7 +307,7 @@ impl QuickActionBar {
                     repl::assign_kernelspec(kernelspec, editor.downgrade(), cx).ok();
                 })
             },
-            current_kernelspec.clone(),
+            worktree_id,
             ButtonLike::new("kernel-selector")
                 .style(ButtonStyle::Subtle)
                 .child(

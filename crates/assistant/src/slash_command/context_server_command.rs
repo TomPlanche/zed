@@ -20,7 +20,7 @@ use crate::slash_command::create_label_for_command;
 
 pub struct ContextServerSlashCommand {
     server_manager: Model<ContextServerManager>,
-    server_id: String,
+    server_id: Arc<str>,
     prompt: Prompt,
 }
 
@@ -31,7 +31,7 @@ impl ContextServerSlashCommand {
         prompt: Prompt,
     ) -> Self {
         Self {
-            server_id: server.id.clone(),
+            server_id: server.id(),
             prompt,
             server_manager,
         }
@@ -89,7 +89,7 @@ impl SlashCommand for ContextServerSlashCommand {
 
         if let Some(server) = self.server_manager.read(cx).get_server(&server_id) {
             cx.foreground_executor().spawn(async move {
-                let Some(protocol) = server.client.read().clone() else {
+                let Some(protocol) = server.client() else {
                     return Err(anyhow!("Context server not initialized"));
                 };
 
@@ -143,7 +143,7 @@ impl SlashCommand for ContextServerSlashCommand {
         let manager = self.server_manager.read(cx);
         if let Some(server) = manager.get_server(&server_id) {
             cx.foreground_executor().spawn(async move {
-                let Some(protocol) = server.client.read().clone() else {
+                let Some(protocol) = server.client() else {
                     return Err(anyhow!("Context server not initialized"));
                 };
                 let result = protocol.run_prompt(&prompt_name, prompt_args).await?;
@@ -152,7 +152,7 @@ impl SlashCommand for ContextServerSlashCommand {
                 if result
                     .messages
                     .iter()
-                    .any(|msg| !matches!(msg.role, context_servers::types::SamplingRole::User))
+                    .any(|msg| !matches!(msg.role, context_servers::types::Role::User))
                 {
                     return Err(anyhow!(
                         "Prompt contains non-user roles, which is not supported"
@@ -164,7 +164,7 @@ impl SlashCommand for ContextServerSlashCommand {
                     .messages
                     .into_iter()
                     .filter_map(|msg| match msg.content {
-                        context_servers::types::SamplingContent::Text { text } => Some(text),
+                        context_servers::types::MessageContent::Text { text } => Some(text),
                         _ => None,
                     })
                     .collect::<Vec<String>>()

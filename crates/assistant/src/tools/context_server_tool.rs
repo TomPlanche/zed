@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{anyhow, bail};
 use assistant_tool::Tool;
 use context_servers::manager::ContextServerManager;
@@ -6,14 +8,14 @@ use gpui::{Model, Task};
 
 pub struct ContextServerTool {
     server_manager: Model<ContextServerManager>,
-    server_id: String,
+    server_id: Arc<str>,
     tool: types::Tool,
 }
 
 impl ContextServerTool {
     pub fn new(
         server_manager: Model<ContextServerManager>,
-        server_id: impl Into<String>,
+        server_id: impl Into<Arc<str>>,
         tool: types::Tool,
     ) -> Self {
         Self {
@@ -55,7 +57,7 @@ impl Tool for ContextServerTool {
             cx.foreground_executor().spawn({
                 let tool_name = self.tool.name.clone();
                 async move {
-                    let Some(protocol) = server.client.read().clone() else {
+                    let Some(protocol) = server.client() else {
                         bail!("Context server not initialized");
                     };
 
@@ -72,11 +74,21 @@ impl Tool for ContextServerTool {
                     );
                     let response = protocol.run_tool(tool_name, arguments).await?;
 
-                    let tool_result = match response.tool_result {
-                        serde_json::Value::String(s) => s,
-                        _ => serde_json::to_string(&response.tool_result)?,
-                    };
-                    Ok(tool_result)
+                    let mut result = String::new();
+                    for content in response.content {
+                        match content {
+                            types::ToolResponseContent::Text { text } => {
+                                result.push_str(&text);
+                            }
+                            types::ToolResponseContent::Image { .. } => {
+                                log::warn!("Ignoring image content from tool response");
+                            }
+                            types::ToolResponseContent::Resource { .. } => {
+                                log::warn!("Ignoring resource content from tool response");
+                            }
+                        }
+                    }
+                    Ok(result)
                 }
             })
         } else {
