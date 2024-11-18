@@ -53,6 +53,7 @@ use ui::{
     IndentGuideColors, IndentGuideLayout, KeyBinding, Label, ListItem, Scrollbar, ScrollbarState,
     Tooltip,
 };
+use util::paths::{compare_file_type, compare_paths_with_strategy};
 use util::{maybe, ResultExt, TryFutureExt};
 use workspace::{
     dock::{DockPosition, Panel, PanelEvent},
@@ -461,7 +462,7 @@ impl ProjectPanel {
                 _ => {}
             }
         })
-        .detach();
+            .detach();
 
         project_panel
     }
@@ -2118,7 +2119,21 @@ impl ProjectPanel {
             }
 
             snapshot.propagate_git_statuses(&mut visible_worktree_entries);
-            project::sort_worktree_entries(&mut visible_worktree_entries);
+
+            let sort_settings = ProjectPanelSettings::get_global(cx).sort;
+            visible_worktree_entries.sort_by(|entry_a, entry_b| {
+                compare_paths_with_strategy(
+                    (&entry_a.path, entry_a.is_file()),
+                    (&entry_b.path, entry_b.is_file()),
+                    sort_settings,
+                )
+            });
+
+            if sort_settings.file_type {
+                visible_worktree_entries
+                    .sort_by(|entry_a, entry_b| compare_file_type(&entry_a.path, &entry_b.path))
+            }
+
             self.visible_entries
                 .push((worktree_id, visible_worktree_entries, OnceCell::new()));
         }
@@ -2248,9 +2263,9 @@ impl ProjectPanel {
                     }
                 })
             }
-            .log_err()
+                .log_err()
         })
-        .detach();
+            .detach();
     }
 
     fn drag_onto(
@@ -3688,6 +3703,7 @@ mod tests {
     use settings::SettingsStore;
     use std::path::{Path, PathBuf};
     use ui::Context;
+    use util::paths::{SortSettings, SortStrategy};
     use workspace::{
         item::{Item, ProjectItem},
         register_project_item, AppState,
@@ -6448,6 +6464,13 @@ mod tests {
             cx.update_global::<SettingsStore, _>(|store, cx| {
                 store.update_user_settings::<ProjectPanelSettings>(cx, |project_panel_settings| {
                     project_panel_settings.auto_fold_dirs = Some(false);
+
+                    let sort_settings: SortSettings = SortSettings {
+                        strategy: SortStrategy::Lexicographical,
+                        uppercase_first: false,
+                        file_type: false,
+                    };
+                    project_panel_settings.sort = Some(sort_settings);
                 });
                 store.update_user_settings::<WorktreeSettings>(cx, |worktree_settings| {
                     worktree_settings.file_scan_exclusions = Some(Vec::new());

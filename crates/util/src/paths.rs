@@ -1,16 +1,16 @@
-use std::cmp;
+use crate::NumericPrefixWithSuffix;
+use globset::{Glob, GlobSet, GlobSetBuilder};
+use regex::Regex;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+use std::iter::Peekable;
 use std::sync::OnceLock;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
     sync::LazyLock,
 };
-
-use globset::{Glob, GlobSet, GlobSetBuilder};
-use regex::Regex;
-use serde::{Deserialize, Serialize};
-
-use crate::NumericPrefixWithSuffix;
 
 /// Returns the path to the user's home directory.
 pub fn home_dir() -> &'static PathBuf {
@@ -344,10 +344,65 @@ impl PathMatcher {
     }
 }
 
+fn compare_natural(a: &str, b: &str, uppercase_first: bool) -> Ordering {
+    let mut a_chars = a.chars().peekable();
+    let mut b_chars = b.chars().peekable();
+
+    loop {
+        match (a_chars.peek(), b_chars.peek()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(&a_ch), Some(&b_ch)) => {
+                if a_ch.is_digit(10) && b_ch.is_digit(10) {
+                    let a_num = extract_number(&mut a_chars);
+                    let b_num = extract_number(&mut b_chars);
+
+                    match a_num.cmp(&b_num) {
+                        Ordering::Equal => match a.len().cmp(&b.len()) {
+                            Ordering::Equal => continue,
+                            other => return other,
+                        },
+                        other => return other,
+                    }
+                } else {
+                    if let Some(aa) = compare_case_sensitivity(&a, &b, uppercase_first) {
+                        return aa;
+                    }
+
+                    match a_ch.cmp(&b_ch) {
+                        Ordering::Equal => {
+                            a_chars.next();
+                            b_chars.next();
+                        }
+                        other => return other,
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn extract_number<I>(chars: &mut Peekable<I>) -> u32
+where
+    I: Iterator<Item = char>,
+{
+    let mut number = 0;
+    while let Some(&ch) = chars.peek() {
+        if ch.is_digit(10) {
+            number = number * 10 + ch.to_digit(10).unwrap();
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    number
+}
+
 pub fn compare_paths(
     (path_a, a_is_file): (&Path, bool),
     (path_b, b_is_file): (&Path, bool),
-) -> cmp::Ordering {
+) -> Ordering {
     let mut components_a = path_a.components().peekable();
     let mut components_b = path_b.components().peekable();
     loop {
@@ -374,6 +429,7 @@ pub fn compare_paths(
                         path_b.file_name()
                     }
                     .map(|s| s.to_string_lossy());
+
                     let num_and_remainder_b = path_string_b
                         .as_deref()
                         .map(NumericPrefixWithSuffix::from_numeric_prefixed_str);
@@ -384,11 +440,167 @@ pub fn compare_paths(
                     return ordering;
                 }
             }
-            (Some(_), None) => break cmp::Ordering::Greater,
-            (None, Some(_)) => break cmp::Ordering::Less,
-            (None, None) => break cmp::Ordering::Equal,
+            (Some(_), None) => break Ordering::Greater,
+            (None, Some(_)) => break Ordering::Less,
+            (None, None) => break Ordering::Equal,
         }
     }
+}
+
+fn compare_case_sensitivity(a: &str, b: &str, uppercase_first: bool) -> Option<Ordering> {
+    if uppercase_first {
+        return None;
+    }
+
+    let a_upper = a.chars().any(char::is_uppercase);
+    let b_upper = b.chars().any(char::is_uppercase);
+
+    match (a_upper, b_upper) {
+        (true, false) => Some(Ordering::Greater),
+        (false, true) => Some(Ordering::Less),
+        _ => None,
+    }
+}
+
+#[derive(Deserialize, Clone, Copy, PartialEq, Serialize, Debug, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SortStrategy {
+    Alphabetical = 0,
+    AlphabeticalReversed,
+    Lexicographical,
+    LexicographicalReversed,
+}
+
+#[derive(Deserialize, Clone, Copy, PartialEq, Serialize, Debug, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SortSettings {
+    /// Sorting strategy for project panel entries.
+    ///
+    /// Default: Alphabetical
+    pub strategy: SortStrategy,
+
+    /// Whether uppercased words should be sorted before lowercased ones.
+    ///
+    /// Default: true
+    pub uppercase_first: bool,
+
+    /// Wheter to sort by file type
+    ///
+    /// Default: false
+    pub file_type: bool,
+}
+
+pub fn compare_paths_with_strategy(
+    (path_a, a_is_file): (&Path, bool),
+    (path_b, b_is_file): (&Path, bool),
+    sort: SortSettings,
+) -> Ordering {
+    let mut components_a = path_a.components().peekable();
+    let mut components_b = path_b.components().peekable();
+
+    loop {
+        match (components_a.next(), components_b.next()) {
+            (Some(component_a), Some(component_b)) => {
+                let a_is_file = components_a.peek().is_none() && a_is_file;
+                let b_is_file = components_b.peek().is_none() && b_is_file;
+
+                let ordering = a_is_file.cmp(&b_is_file).then_with(|| {
+                    let path_a = Path::new(component_a.as_os_str());
+                    let path_string_a = if a_is_file {
+                        path_a.file_stem()
+                    } else {
+                        path_a.file_name()
+                    }
+                    .map(|s| s.to_string_lossy());
+
+                    let path_b = Path::new(component_b.as_os_str());
+                    let path_string_b = if a_is_file {
+                        // TODO: WTF CHANGE
+                        path_b.file_stem()
+                    } else {
+                        path_b.file_name()
+                    }
+                    .map(|s| s.to_string_lossy());
+
+                    match (path_string_a, path_string_b) {
+                        (Some(a), Some(b)) => {
+                            let a_str = a.to_string();
+                            let b_str = b.to_string();
+
+                            let SortSettings {
+                                strategy,
+                                uppercase_first,
+                                file_type: _,
+                            } = sort;
+
+                            match strategy {
+                                SortStrategy::Alphabetical => {
+                                    compare_natural(&a_str, &b_str, uppercase_first)
+                                }
+                                SortStrategy::AlphabeticalReversed => {
+                                    compare_natural(&b_str, &a_str, uppercase_first)
+                                }
+                                SortStrategy::Lexicographical => {
+                                    if let Some(ord) =
+                                        compare_case_sensitivity(&a_str, &b_str, uppercase_first)
+                                    {
+                                        return ord;
+                                    }
+                                    let num_and_remainder_a =
+                                        NumericPrefixWithSuffix::from_numeric_prefixed_str(&a);
+                                    let num_and_remainder_b =
+                                        NumericPrefixWithSuffix::from_numeric_prefixed_str(&b);
+
+                                    num_and_remainder_a.cmp(&num_and_remainder_b)
+                                }
+                                SortStrategy::LexicographicalReversed => {
+                                    if let Some(ord) =
+                                        compare_case_sensitivity(&a_str, &b_str, uppercase_first)
+                                    {
+                                        return ord;
+                                    }
+                                    let num_and_remainder_a =
+                                        NumericPrefixWithSuffix::from_numeric_prefixed_str(&a);
+                                    let num_and_remainder_b =
+                                        NumericPrefixWithSuffix::from_numeric_prefixed_str(&b);
+
+                                    num_and_remainder_b.cmp(&num_and_remainder_a)
+                                }
+                            }
+                        }
+                        (Some(_), None) => Ordering::Greater,
+                        (None, Some(_)) => Ordering::Less,
+                        (None, None) => Ordering::Equal,
+                    }
+                });
+
+                if !ordering.is_eq() {
+                    return ordering;
+                }
+            }
+            (Some(_), None) => break Ordering::Greater,
+            (None, Some(_)) => break Ordering::Less,
+            (None, None) => break Ordering::Equal,
+        }
+    }
+}
+
+pub fn compare_file_type(a: &Path, b: &Path) -> Ordering {
+    let a_extension = a
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
+    let b_extension = b
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
+
+    a_extension
+        .rsplit('.')
+        .next()
+        .zip(b_extension.rsplit('.').next())
+        .map(|(a_ext, b_ext)| a_ext.cmp(b_ext))
+        .unwrap_or_else(|| a_extension.len().cmp(&b_extension.len()))
 }
 
 #[cfg(test)]
@@ -461,6 +673,490 @@ mod tests {
                 (Path::new("test_DIRS/BAR"), true),
                 (Path::new("test_DIRS/foo_1"), true),
                 (Path::new("test_DIRS/foo_2"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_alphabetical() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::Alphabetical,
+            uppercase_first: true,
+            file_type: false,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs"), false),
+            (Path::new("test_dirs/1.46"), false),
+            (Path::new("test_dirs/1.46/bar_1"), true),
+            (Path::new("test_dirs/1.46/bar_2"), true),
+            (Path::new("test_dirs/1.45"), false),
+            (Path::new("test_dirs/1.45/foo_2"), true),
+            (Path::new("test_dirs/1.45/foo_1"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs"), false),
+                (Path::new("test_dirs/1.45"), false),
+                (Path::new("test_dirs/1.45/foo_1"), true),
+                (Path::new("test_dirs/1.45/foo_2"), true),
+                (Path::new("test_dirs/1.46"), false),
+                (Path::new("test_dirs/1.46/bar_1"), true),
+                (Path::new("test_dirs/1.46/bar_2"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_alphabetical_all_uppercase() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::Alphabetical,
+            uppercase_first: true,
+            file_type: false,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs"), false),
+            (Path::new("test_dirs/AC"), false),
+            (Path::new("test_dirs/AA"), false),
+            (Path::new("test_dirs/AB"), false),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs"), false),
+                (Path::new("test_dirs/AA"), false),
+                (Path::new("test_dirs/AB"), false),
+                (Path::new("test_dirs/AC"), false),
+            ]
+        )
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_alphabetical_reversed() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::AlphabeticalReversed,
+            uppercase_first: true,
+            file_type: false,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs"), false),
+            (Path::new("test_dirs/1.46"), false),
+            (Path::new("test_dirs/1.46/bar_1"), true),
+            (Path::new("test_dirs/1.46/bar_2"), true),
+            (Path::new("test_dirs/1.45"), false),
+            (Path::new("test_dirs/1.45/foo_2"), true),
+            (Path::new("test_dirs/1.45/foo_1"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs"), false),
+                (Path::new("test_dirs/1.46"), false),
+                (Path::new("test_dirs/1.46/bar_2"), true),
+                (Path::new("test_dirs/1.46/bar_1"), true),
+                (Path::new("test_dirs/1.45"), false),
+                (Path::new("test_dirs/1.45/foo_2"), true),
+                (Path::new("test_dirs/1.45/foo_1"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_lexicographical() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::Lexicographical,
+            uppercase_first: true,
+            file_type: false,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs/file10.txt"), true),
+            (Path::new("test_dirs/file3.txt"), true),
+            (Path::new("test_dirs/file20.txt"), true),
+            (Path::new("test_dirs/file1.txt"), true),
+            (Path::new("test_dirs/file2.txt"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs/file1.txt"), true),
+                (Path::new("test_dirs/file10.txt"), true),
+                (Path::new("test_dirs/file2.txt"), true),
+                (Path::new("test_dirs/file20.txt"), true),
+                (Path::new("test_dirs/file3.txt"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_lexicographical_reversed() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::LexicographicalReversed,
+            uppercase_first: true,
+            file_type: false,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs/file2.txt"), true),
+            (Path::new("test_dirs/file1.txt"), true),
+            (Path::new("test_dirs/file20.txt"), true),
+            (Path::new("test_dirs/file3.txt"), true),
+            (Path::new("test_dirs/file10.txt"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs/file3.txt"), true),
+                (Path::new("test_dirs/file20.txt"), true),
+                (Path::new("test_dirs/file2.txt"), true),
+                (Path::new("test_dirs/file10.txt"), true),
+                (Path::new("test_dirs/file1.txt"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_numbers_in_filenames() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::Alphabetical,
+            uppercase_first: true,
+            file_type: false,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs/file2.txt"), true),
+            (Path::new("test_dirs/file10.txt"), true),
+            (Path::new("test_dirs/file1.txt"), true),
+            (Path::new("test_dirs/file20.txt"), true),
+            (Path::new("test_dirs/file3.txt"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs/file1.txt"), true),
+                (Path::new("test_dirs/file2.txt"), true),
+                (Path::new("test_dirs/file3.txt"), true),
+                (Path::new("test_dirs/file10.txt"), true),
+                (Path::new("test_dirs/file20.txt"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_leading_zeros() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::Alphabetical,
+            uppercase_first: true,
+            file_type: false,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs/file02.txt"), true),
+            (Path::new("test_dirs/file001.txt"), true),
+            (Path::new("test_dirs/file1.txt"), true),
+            (Path::new("test_dirs/file10.txt"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs/file1.txt"), true),
+                (Path::new("test_dirs/file001.txt"), true),
+                (Path::new("test_dirs/file02.txt"), true),
+                (Path::new("test_dirs/file10.txt"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_mixed_case_and_numbers() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::Alphabetical,
+            uppercase_first: true,
+            file_type: false,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs/file2.txt"), true),
+            (Path::new("test_dirs/file10.txt"), true),
+            (Path::new("test_dirs/file1.txt"), true),
+            (Path::new("test_dirs/fileA.txt"), true),
+            (Path::new("test_dirs/fileB.txt"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs/file1.txt"), true),
+                (Path::new("test_dirs/file2.txt"), true),
+                (Path::new("test_dirs/file10.txt"), true),
+                (Path::new("test_dirs/fileA.txt"), true),
+                (Path::new("test_dirs/fileB.txt"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_mixed_case_and_numbers_reversed() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::AlphabeticalReversed,
+            uppercase_first: true,
+            file_type: false,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs/file2.txt"), true),
+            (Path::new("test_dirs/file10.txt"), true),
+            (Path::new("test_dirs/file1.txt"), true),
+            (Path::new("test_dirs/fileA.txt"), true),
+            (Path::new("test_dirs/fileB.txt"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs/fileB.txt"), true),
+                (Path::new("test_dirs/fileA.txt"), true),
+                (Path::new("test_dirs/file10.txt"), true),
+                (Path::new("test_dirs/file2.txt"), true),
+                (Path::new("test_dirs/file1.txt"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_mixed_types() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::Alphabetical,
+            uppercase_first: true,
+            file_type: false,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs"), false),
+            (Path::new("test_dirs/subdir"), false),
+            (Path::new("test_dirs/file.txt"), true),
+            (Path::new("test_dirs/another.txt"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs"), false),
+                (Path::new("test_dirs/subdir"), false),
+                (Path::new("test_dirs/another.txt"), true),
+                (Path::new("test_dirs/file.txt"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_lowercase_first() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::Alphabetical,
+            uppercase_first: false,
+            file_type: false,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs/BBB.txt"), true),
+            (Path::new("test_dirs/ccc.txt"), true),
+            (Path::new("test_dirs/DDD.txt"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs/ccc.txt"), true),
+                (Path::new("test_dirs/BBB.txt"), true),
+                (Path::new("test_dirs/DDD.txt"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_uppercase_first() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::Alphabetical,
+            uppercase_first: true,
+            file_type: false,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs/bbb.txt"), true),
+            (Path::new("test_dirs/AAA.txt"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs/AAA.txt"), true),
+                (Path::new("test_dirs/bbb.txt"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_dots() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::Alphabetical,
+            uppercase_first: true,
+            file_type: false,
+        };
+
+        let mut paths = vec![
+            (Path::new("root1/one.txt"), true),
+            (Path::new("root1/one.two.three.txt"), true),
+            (Path::new("root1/one.two.txt"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("root1/one.txt"), true),
+                (Path::new("root1/one.two.txt"), true),
+                (Path::new("root1/one.two.three.txt"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_file_type() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::Alphabetical,
+            uppercase_first: false,
+            file_type: true,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs/file.txt"), true),
+            (Path::new("test_dirs/file.png"), true),
+            (Path::new("test_dirs/file.jpg"), true),
+            (Path::new("test_dirs/file.pdf"), true),
+            (Path::new("test_dirs/file.md"), true),
+            (Path::new("test_dirs/file.docx"), true),
+            (Path::new("test_dirs/file.xlsx"), true),
+            (Path::new("test_dirs/file.zip"), true),
+            (Path::new("test_dirs/file.tar.gz"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        if sort_settings.file_type {
+            paths.sort_by(|&a, &b| compare_file_type(a.0, b.0));
+        }
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs/file.docx"), true),
+                (Path::new("test_dirs/file.tar.gz"), true),
+                (Path::new("test_dirs/file.jpg"), true),
+                (Path::new("test_dirs/file.md"), true),
+                (Path::new("test_dirs/file.pdf"), true),
+                (Path::new("test_dirs/file.png"), true),
+                (Path::new("test_dirs/file.txt"), true),
+                (Path::new("test_dirs/file.xlsx"), true),
+                (Path::new("test_dirs/file.zip"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_lowercase_first_file_type() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::Alphabetical,
+            uppercase_first: false,
+            file_type: true,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs/docs.png"), true),
+            (Path::new("test_dirs/file.txt"), true),
+            (Path::new("test_dirs/docs.txt"), true),
+            (Path::new("test_dirs/file.png"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        if sort_settings.file_type {
+            paths.sort_by(|&a, &b| compare_file_type(a.0, b.0));
+        }
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs/docs.png"), true),
+                (Path::new("test_dirs/file.png"), true),
+                (Path::new("test_dirs/docs.txt"), true),
+                (Path::new("test_dirs/file.txt"), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compare_paths_with_strategy_uppercase_first_file_type() {
+        let sort_settings: SortSettings = SortSettings {
+            strategy: SortStrategy::Alphabetical,
+            uppercase_first: true,
+            file_type: true,
+        };
+
+        let mut paths = vec![
+            (Path::new("test_dirs/docs.png"), true),
+            (Path::new("test_dirs/file.txt"), true),
+            (Path::new("test_dirs/DOCS.txt"), true),
+            (Path::new("test_dirs/FILE.png"), true),
+        ];
+
+        paths.sort_by(|&a, &b| compare_paths_with_strategy(a, b, sort_settings));
+
+        if sort_settings.file_type {
+            paths.sort_by(|&a, &b| compare_file_type(a.0, b.0));
+        }
+
+        assert_eq!(
+            paths,
+            vec![
+                (Path::new("test_dirs/FILE.png"), true),
+                (Path::new("test_dirs/docs.png"), true),
+                (Path::new("test_dirs/DOCS.txt"), true),
+                (Path::new("test_dirs/file.txt"), true),
             ]
         );
     }

@@ -28,6 +28,7 @@ log.workspace = true
 rand = { workspace = true, optional = true }
 regex.workspace = true
 rust-embed.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 take-until = "0.2.0"
