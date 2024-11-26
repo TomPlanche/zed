@@ -1398,6 +1398,15 @@ fn test_move_cursor_different_line_lengths(cx: &mut TestAppContext) {
         view.change_selections(None, cx, |s| {
             s.select_display_ranges([empty_range(0, "ⓐⓑⓒⓓⓔ".len())]);
         });
+
+        // moving above start of document should move selection to start of document,
+        // but the next move down should still be at the original goal_x
+        view.move_up(&MoveUp, cx);
+        assert_eq!(
+            view.selections.display_ranges(cx),
+            &[empty_range(0, "".len())]
+        );
+
         view.move_down(&MoveDown, cx);
         assert_eq!(
             view.selections.display_ranges(cx),
@@ -1417,6 +1426,25 @@ fn test_move_cursor_different_line_lengths(cx: &mut TestAppContext) {
         );
 
         view.move_down(&MoveDown, cx);
+        assert_eq!(
+            view.selections.display_ranges(cx),
+            &[empty_range(4, "ⓐⓑⓒⓓⓔ".len())]
+        );
+
+        // moving past end of document should not change goal_x
+        view.move_down(&MoveDown, cx);
+        assert_eq!(
+            view.selections.display_ranges(cx),
+            &[empty_range(5, "".len())]
+        );
+
+        view.move_down(&MoveDown, cx);
+        assert_eq!(
+            view.selections.display_ranges(cx),
+            &[empty_range(5, "".len())]
+        );
+
+        view.move_up(&MoveUp, cx);
         assert_eq!(
             view.selections.display_ranges(cx),
             &[empty_range(4, "ⓐⓑⓒⓓⓔ".len())]
@@ -6552,6 +6580,45 @@ async fn test_auto_replace_emoji_shortcode(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_snippet_placeholder_choices(cx: &mut gpui::TestAppContext) {
+    init_test(cx, |_| {});
+
+    let (text, insertion_ranges) = marked_text_ranges(
+        indoc! {"
+            ˇ
+        "},
+        false,
+    );
+
+    let buffer = cx.update(|cx| MultiBuffer::build_simple(&text, cx));
+    let (editor, cx) = cx.add_window_view(|cx| build_editor(buffer, cx));
+
+    _ = editor.update(cx, |editor, cx| {
+        let snippet = Snippet::parse("type ${1|,i32,u32|} = $2").unwrap();
+
+        editor
+            .insert_snippet(&insertion_ranges, snippet, cx)
+            .unwrap();
+
+        fn assert(editor: &mut Editor, cx: &mut ViewContext<Editor>, marked_text: &str) {
+            let (expected_text, selection_ranges) = marked_text_ranges(marked_text, false);
+            assert_eq!(editor.text(cx), expected_text);
+            assert_eq!(editor.selections.ranges::<usize>(cx), selection_ranges);
+        }
+
+        assert(
+            editor,
+            cx,
+            indoc! {"
+            type «» =•
+            "},
+        );
+
+        assert!(editor.context_menu_visible(), "There should be a matches");
+    });
+}
+
+#[gpui::test]
 async fn test_snippets(cx: &mut gpui::TestAppContext) {
     init_test(cx, |_| {});
 
@@ -10475,6 +10542,200 @@ async fn test_completions_with_additional_edits(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_completions_default_resolve_data_handling(cx: &mut gpui::TestAppContext) {
+    init_test(cx, |_| {});
+
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            completion_provider: Some(lsp::CompletionOptions {
+                trigger_characters: Some(vec![".".to_string()]),
+                resolve_provider: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
+
+    cx.set_state(indoc! {"fn main() { let a = 2ˇ; }"});
+    cx.simulate_keystroke(".");
+
+    let default_commit_characters = vec!["?".to_string()];
+    let default_data = json!({ "very": "special"});
+    let default_insert_text_format = lsp::InsertTextFormat::SNIPPET;
+    let default_insert_text_mode = lsp::InsertTextMode::AS_IS;
+    let default_edit_range = lsp::Range {
+        start: lsp::Position {
+            line: 0,
+            character: 5,
+        },
+        end: lsp::Position {
+            line: 0,
+            character: 5,
+        },
+    };
+
+    let completion_data = default_data.clone();
+    let completion_characters = default_commit_characters.clone();
+    cx.handle_request::<lsp::request::Completion, _, _>(move |_, _, _| {
+        let default_data = completion_data.clone();
+        let default_commit_characters = completion_characters.clone();
+        async move {
+            Ok(Some(lsp::CompletionResponse::List(lsp::CompletionList {
+                items: vec![
+                    lsp::CompletionItem {
+                        label: "Some(2)".into(),
+                        insert_text: Some("Some(2)".into()),
+                        data: Some(json!({ "very": "special"})),
+                        insert_text_mode: Some(lsp::InsertTextMode::ADJUST_INDENTATION),
+                        text_edit: Some(lsp::CompletionTextEdit::InsertAndReplace(
+                            lsp::InsertReplaceEdit {
+                                new_text: "Some(2)".to_string(),
+                                insert: lsp::Range::default(),
+                                replace: lsp::Range::default(),
+                            },
+                        )),
+                        ..lsp::CompletionItem::default()
+                    },
+                    lsp::CompletionItem {
+                        label: "vec![2]".into(),
+                        insert_text: Some("vec![2]".into()),
+                        insert_text_format: Some(lsp::InsertTextFormat::PLAIN_TEXT),
+                        ..lsp::CompletionItem::default()
+                    },
+                ],
+                item_defaults: Some(lsp::CompletionListItemDefaults {
+                    data: Some(default_data.clone()),
+                    commit_characters: Some(default_commit_characters.clone()),
+                    edit_range: Some(lsp::CompletionListItemDefaultsEditRange::Range(
+                        default_edit_range,
+                    )),
+                    insert_text_format: Some(default_insert_text_format),
+                    insert_text_mode: Some(default_insert_text_mode),
+                }),
+                ..lsp::CompletionList::default()
+            })))
+        }
+    })
+    .next()
+    .await;
+
+    cx.condition(|editor, _| editor.context_menu_visible())
+        .await;
+
+    cx.update_editor(|editor, _| {
+        let menu = editor.context_menu.read();
+        match menu.as_ref().expect("should have the completions menu") {
+            ContextMenu::Completions(completions_menu) => {
+                assert_eq!(
+                    completions_menu
+                        .matches
+                        .iter()
+                        .map(|c| c.string.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["Some(2)", "vec![2]"]
+                );
+            }
+            ContextMenu::CodeActions(_) => panic!("Expected to have the completions menu"),
+        }
+    });
+
+    cx.update_editor(|editor, cx| {
+        editor.context_menu_first(&ContextMenuFirst, cx);
+    });
+    let first_item_resolve_characters = default_commit_characters.clone();
+    cx.handle_request::<lsp::request::ResolveCompletionItem, _, _>(move |_, item_to_resolve, _| {
+        let default_commit_characters = first_item_resolve_characters.clone();
+
+        async move {
+            assert_eq!(
+                item_to_resolve.label, "Some(2)",
+                "Should have selected the first item"
+            );
+            assert_eq!(
+                item_to_resolve.data,
+                Some(json!({ "very": "special"})),
+                "First item should bring its own data for resolving"
+            );
+            assert_eq!(
+                item_to_resolve.commit_characters,
+                Some(default_commit_characters),
+                "First item had no own commit characters and should inherit the default ones"
+            );
+            assert!(
+                matches!(
+                    item_to_resolve.text_edit,
+                    Some(lsp::CompletionTextEdit::InsertAndReplace { .. })
+                ),
+                "First item should bring its own edit range for resolving"
+            );
+            assert_eq!(
+                item_to_resolve.insert_text_format,
+                Some(default_insert_text_format),
+                "First item had no own insert text format and should inherit the default one"
+            );
+            assert_eq!(
+                item_to_resolve.insert_text_mode,
+                Some(lsp::InsertTextMode::ADJUST_INDENTATION),
+                "First item should bring its own insert text mode for resolving"
+            );
+            Ok(item_to_resolve)
+        }
+    })
+    .next()
+    .await
+    .unwrap();
+
+    cx.update_editor(|editor, cx| {
+        editor.context_menu_last(&ContextMenuLast, cx);
+    });
+    cx.handle_request::<lsp::request::ResolveCompletionItem, _, _>(move |_, item_to_resolve, _| {
+        let default_data = default_data.clone();
+        let default_commit_characters = default_commit_characters.clone();
+        async move {
+            assert_eq!(
+                item_to_resolve.label, "vec![2]",
+                "Should have selected the last item"
+            );
+            assert_eq!(
+                item_to_resolve.data,
+                Some(default_data),
+                "Last item has no own resolve data and should inherit the default one"
+            );
+            assert_eq!(
+                item_to_resolve.commit_characters,
+                Some(default_commit_characters),
+                "Last item had no own commit characters and should inherit the default ones"
+            );
+            assert_eq!(
+                item_to_resolve.text_edit,
+                Some(lsp::CompletionTextEdit::Edit(lsp::TextEdit {
+                    range: default_edit_range,
+                    new_text: "vec![2]".to_string()
+                })),
+                "Last item had no own edit range and should inherit the default one"
+            );
+            assert_eq!(
+                item_to_resolve.insert_text_format,
+                Some(lsp::InsertTextFormat::PLAIN_TEXT),
+                "Last item should bring its own insert text format for resolving"
+            );
+            assert_eq!(
+                item_to_resolve.insert_text_mode,
+                Some(default_insert_text_mode),
+                "Last item had no own insert text mode and should inherit the default one"
+            );
+
+            Ok(item_to_resolve)
+        }
+    })
+    .next()
+    .await
+    .unwrap();
+}
+
+#[gpui::test]
 async fn test_completions_in_languages_with_extra_word_characters(cx: &mut gpui::TestAppContext) {
     init_test(cx, |_| {});
 
@@ -12291,7 +12552,7 @@ async fn test_edits_around_expanded_insertion_hunks(
     executor.run_until_parked();
     cx.assert_diff_hunks(
         r#"
-        use some::mod1;
+      - use some::mod1;
       - use some::mod2;
       -
       - const A: u32 = 42;
