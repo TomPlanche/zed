@@ -2,19 +2,24 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use assistant_tool::ToolWorkingSet;
+use client::zed_urls;
 use gpui::{
-    prelude::*, px, Action, AppContext, AsyncWindowContext, EventEmitter, FocusHandle,
-    FocusableView, Model, Pixels, Subscription, Task, View, ViewContext, WeakView, WindowContext,
+    prelude::*, px, svg, Action, AnyElement, AppContext, AsyncWindowContext, EventEmitter,
+    FocusHandle, FocusableView, FontWeight, Model, Pixels, Task, View, ViewContext, WeakView,
+    WindowContext,
 };
-use language_model::{LanguageModelRegistry, Role};
+use language::LanguageRegistry;
+use language_model::LanguageModelRegistry;
 use language_model_selector::LanguageModelSelector;
-use ui::{prelude::*, ButtonLike, Divider, IconButtonShape, Tab, Tooltip};
+use ui::{prelude::*, ButtonLike, Divider, IconButtonShape, KeyBinding, ListItem, Tab, Tooltip};
 use workspace::dock::{DockPosition, Panel, PanelEvent};
 use workspace::Workspace;
 
+use crate::active_thread::ActiveThread;
 use crate::message_editor::MessageEditor;
-use crate::thread::{Message, Thread, ThreadEvent};
-use crate::{NewThread, ToggleFocus, ToggleModelSelector};
+use crate::thread::{Thread, ThreadError, ThreadId};
+use crate::thread_store::ThreadStore;
+use crate::{NewThread, OpenHistory, ToggleFocus, ToggleModelSelector};
 
 pub fn init(cx: &mut AppContext) {
     cx.observe_new_views(
@@ -29,10 +34,11 @@ pub fn init(cx: &mut AppContext) {
 
 pub struct AssistantPanel {
     workspace: WeakView<Workspace>,
-    thread: Model<Thread>,
+    language_registry: Arc<LanguageRegistry>,
+    thread_store: Model<ThreadStore>,
+    thread: Option<View<ActiveThread>>,
     message_editor: View<MessageEditor>,
     tools: Arc<ToolWorkingSet>,
-    _subscriptions: Vec<Subscription>,
 }
 
 impl AssistantPanel {
@@ -42,78 +48,74 @@ impl AssistantPanel {
     ) -> Task<Result<View<Self>>> {
         cx.spawn(|mut cx| async move {
             let tools = Arc::new(ToolWorkingSet::default());
+            let thread_store = workspace
+                .update(&mut cx, |workspace, cx| {
+                    let project = workspace.project().clone();
+                    ThreadStore::new(project, tools.clone(), cx)
+                })?
+                .await?;
+
             workspace.update(&mut cx, |workspace, cx| {
-                cx.new_view(|cx| Self::new(workspace, tools, cx))
+                cx.new_view(|cx| Self::new(workspace, thread_store, tools, cx))
             })
         })
     }
 
-    fn new(workspace: &Workspace, tools: Arc<ToolWorkingSet>, cx: &mut ViewContext<Self>) -> Self {
-        let thread = cx.new_model(|cx| Thread::new(tools.clone(), cx));
-        let subscriptions = vec![
-            cx.observe(&thread, |_, _, cx| cx.notify()),
-            cx.subscribe(&thread, Self::handle_thread_event),
-        ];
+    fn new(
+        workspace: &Workspace,
+        thread_store: Model<ThreadStore>,
+        tools: Arc<ToolWorkingSet>,
+        cx: &mut ViewContext<Self>,
+    ) -> Self {
+        let thread = thread_store.update(cx, |this, cx| this.create_thread(cx));
 
         Self {
             workspace: workspace.weak_handle(),
-            thread: thread.clone(),
+            language_registry: workspace.project().read(cx).languages().clone(),
+            thread_store,
+            thread: None,
             message_editor: cx.new_view(|cx| MessageEditor::new(thread, cx)),
             tools,
-            _subscriptions: subscriptions,
         }
     }
 
     fn new_thread(&mut self, cx: &mut ViewContext<Self>) {
-        let tools = self.thread.read(cx).tools().clone();
-        let thread = cx.new_model(|cx| Thread::new(tools, cx));
-        let subscriptions = vec![
-            cx.observe(&thread, |_, _, cx| cx.notify()),
-            cx.subscribe(&thread, Self::handle_thread_event),
-        ];
+        let thread = self
+            .thread_store
+            .update(cx, |this, cx| this.create_thread(cx));
 
-        self.message_editor = cx.new_view(|cx| MessageEditor::new(thread.clone(), cx));
-        self.thread = thread;
-        self._subscriptions = subscriptions;
-
+        self.thread = Some(cx.new_view(|cx| {
+            ActiveThread::new(
+                thread.clone(),
+                self.workspace.clone(),
+                self.language_registry.clone(),
+                self.tools.clone(),
+                cx,
+            )
+        }));
+        self.message_editor = cx.new_view(|cx| MessageEditor::new(thread, cx));
         self.message_editor.focus_handle(cx).focus(cx);
     }
 
-    fn handle_thread_event(
-        &mut self,
-        _: Model<Thread>,
-        event: &ThreadEvent,
-        cx: &mut ViewContext<Self>,
-    ) {
-        match event {
-            ThreadEvent::StreamedCompletion => {}
-            ThreadEvent::UsePendingTools => {
-                let pending_tool_uses = self
-                    .thread
-                    .read(cx)
-                    .pending_tool_uses()
-                    .into_iter()
-                    .filter(|tool_use| tool_use.status.is_idle())
-                    .cloned()
-                    .collect::<Vec<_>>();
+    fn open_thread(&mut self, thread_id: &ThreadId, cx: &mut ViewContext<Self>) {
+        let Some(thread) = self
+            .thread_store
+            .update(cx, |this, cx| this.open_thread(thread_id, cx))
+        else {
+            return;
+        };
 
-                for tool_use in pending_tool_uses {
-                    if let Some(tool) = self.tools.tool(&tool_use.name, cx) {
-                        let task = tool.run(tool_use.input, self.workspace.clone(), cx);
-
-                        self.thread.update(cx, |thread, cx| {
-                            thread.insert_tool_output(
-                                tool_use.assistant_message_id,
-                                tool_use.id.clone(),
-                                task,
-                                cx,
-                            );
-                        });
-                    }
-                }
-            }
-            ThreadEvent::ToolFinished { .. } => {}
-        }
+        self.thread = Some(cx.new_view(|cx| {
+            ActiveThread::new(
+                thread.clone(),
+                self.workspace.clone(),
+                self.language_registry.clone(),
+                self.tools.clone(),
+                cx,
+            )
+        }));
+        self.message_editor = cx.new_view(|cx| MessageEditor::new(thread, cx));
+        self.message_editor.focus_handle(cx).focus(cx);
     }
 }
 
@@ -200,8 +202,8 @@ impl AssistantPanel {
                                     )
                                 }
                             })
-                            .on_click(move |_event, _cx| {
-                                println!("New Thread");
+                            .on_click(move |_event, cx| {
+                                cx.dispatch_action(NewThread.boxed_clone());
                             }),
                     )
                     .child(
@@ -209,9 +211,19 @@ impl AssistantPanel {
                             .shape(IconButtonShape::Square)
                             .icon_size(IconSize::Small)
                             .style(ButtonStyle::Subtle)
-                            .tooltip(move |cx| Tooltip::text("Open History", cx))
-                            .on_click(move |_event, _cx| {
-                                println!("Open History");
+                            .tooltip({
+                                let focus_handle = focus_handle.clone();
+                                move |cx| {
+                                    Tooltip::for_action_in(
+                                        "Open History",
+                                        &OpenHistory,
+                                        &focus_handle,
+                                        cx,
+                                    )
+                                }
+                            })
+                            .on_click(move |_event, cx| {
+                                cx.dispatch_action(OpenHistory.boxed_clone());
                             }),
                     )
                     .child(
@@ -278,38 +290,306 @@ impl AssistantPanel {
         )
     }
 
-    fn render_message(&self, message: Message, cx: &mut ViewContext<Self>) -> impl IntoElement {
-        let (role_icon, role_name) = match message.role {
-            Role::User => (IconName::Person, "You"),
-            Role::Assistant => (IconName::ZedAssistant, "Assistant"),
-            Role::System => (IconName::Settings, "System"),
+    fn render_active_thread_or_empty_state(&self, cx: &mut ViewContext<Self>) -> AnyElement {
+        let Some(thread) = self.thread.as_ref() else {
+            return self.render_thread_empty_state(cx).into_any_element();
         };
 
+        if thread.read(cx).is_empty() {
+            return self.render_thread_empty_state(cx).into_any_element();
+        }
+
+        thread.clone().into_any()
+    }
+
+    fn render_thread_empty_state(&self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+        let recent_threads = self
+            .thread_store
+            .update(cx, |this, cx| this.recent_threads(3, cx));
+
         v_flex()
-            .border_1()
-            .border_color(cx.theme().colors().border_variant)
-            .rounded_md()
+            .gap_2()
+            .mx_auto()
+            .child(
+                v_flex().w_full().child(
+                    svg()
+                        .path("icons/logo_96.svg")
+                        .text_color(cx.theme().colors().text)
+                        .w(px(40.))
+                        .h(px(40.))
+                        .mx_auto()
+                        .mb_4(),
+                ),
+            )
+            .child(v_flex())
             .child(
                 h_flex()
-                    .justify_between()
-                    .p_1p5()
-                    .border_b_1()
-                    .border_color(cx.theme().colors().border_variant)
+                    .w_full()
+                    .justify_center()
+                    .child(Label::new("Context Examples:").size(LabelSize::Small)),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_center()
                     .child(
                         h_flex()
-                            .gap_2()
-                            .child(Icon::new(role_icon).size(IconSize::Small))
-                            .child(Label::new(role_name).size(LabelSize::Small)),
+                            .gap_1()
+                            .p_0p5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().colors().border_variant)
+                            .child(
+                                Icon::new(IconName::Terminal)
+                                    .size(IconSize::Small)
+                                    .color(Color::Disabled),
+                            )
+                            .child(Label::new("Terminal").size(LabelSize::Small)),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .p_0p5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().colors().border_variant)
+                            .child(
+                                Icon::new(IconName::Folder)
+                                    .size(IconSize::Small)
+                                    .color(Color::Disabled),
+                            )
+                            .child(Label::new("/src/components").size(LabelSize::Small)),
                     ),
             )
-            .child(v_flex().p_1p5().child(Label::new(message.text.clone())))
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_center()
+                    .child(Label::new("Recent Threads:").size(LabelSize::Small)),
+            )
+            .child(
+                v_flex().gap_2().children(
+                    recent_threads
+                        .into_iter()
+                        .map(|thread| self.render_past_thread(thread, cx)),
+                ),
+            )
+            .child(
+                h_flex().w_full().justify_center().child(
+                    Button::new("view-all-past-threads", "View All Past Threads")
+                        .style(ButtonStyle::Subtle)
+                        .label_size(LabelSize::Small)
+                        .key_binding(KeyBinding::for_action_in(
+                            &OpenHistory,
+                            &self.focus_handle(cx),
+                            cx,
+                        ))
+                        .on_click(move |_event, cx| {
+                            cx.dispatch_action(OpenHistory.boxed_clone());
+                        }),
+                ),
+            )
+    }
+
+    fn render_past_thread(
+        &self,
+        thread: Model<Thread>,
+        cx: &mut ViewContext<Self>,
+    ) -> impl IntoElement {
+        let id = thread.read(cx).id().clone();
+
+        ListItem::new(("past-thread", thread.entity_id()))
+            .start_slot(Icon::new(IconName::MessageBubbles))
+            .child(Label::new(format!("Thread {id}")))
+            .end_slot(
+                h_flex()
+                    .gap_2()
+                    .child(Label::new("1 hour ago").color(Color::Disabled))
+                    .child(
+                        IconButton::new("delete", IconName::TrashAlt)
+                            .shape(IconButtonShape::Square)
+                            .icon_size(IconSize::Small),
+                    ),
+            )
+            .on_click(cx.listener(move |this, _event, cx| {
+                this.open_thread(&id, cx);
+            }))
+    }
+
+    fn render_last_error(&self, cx: &mut ViewContext<Self>) -> Option<AnyElement> {
+        let last_error = self.thread.as_ref()?.read(cx).last_error()?;
+
+        Some(
+            div()
+                .absolute()
+                .right_3()
+                .bottom_12()
+                .max_w_96()
+                .py_2()
+                .px_3()
+                .elevation_2(cx)
+                .occlude()
+                .child(match last_error {
+                    ThreadError::PaymentRequired => self.render_payment_required_error(cx),
+                    ThreadError::MaxMonthlySpendReached => {
+                        self.render_max_monthly_spend_reached_error(cx)
+                    }
+                    ThreadError::Message(error_message) => {
+                        self.render_error_message(&error_message, cx)
+                    }
+                })
+                .into_any(),
+        )
+    }
+
+    fn render_payment_required_error(&self, cx: &mut ViewContext<Self>) -> AnyElement {
+        const ERROR_MESSAGE: &str = "Free tier exceeded. Subscribe and add payment to continue using Zed LLMs. You'll be billed at cost for tokens used.";
+
+        v_flex()
+            .gap_0p5()
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .child(Icon::new(IconName::XCircle).color(Color::Error))
+                    .child(Label::new("Free Usage Exceeded").weight(FontWeight::MEDIUM)),
+            )
+            .child(
+                div()
+                    .id("error-message")
+                    .max_h_24()
+                    .overflow_y_scroll()
+                    .child(Label::new(ERROR_MESSAGE)),
+            )
+            .child(
+                h_flex()
+                    .justify_end()
+                    .mt_1()
+                    .child(Button::new("subscribe", "Subscribe").on_click(cx.listener(
+                        |this, _, cx| {
+                            if let Some(thread) = this.thread.as_ref() {
+                                thread.update(cx, |this, _cx| {
+                                    this.clear_last_error();
+                                });
+                            }
+
+                            cx.open_url(&zed_urls::account_url(cx));
+                            cx.notify();
+                        },
+                    )))
+                    .child(Button::new("dismiss", "Dismiss").on_click(cx.listener(
+                        |this, _, cx| {
+                            if let Some(thread) = this.thread.as_ref() {
+                                thread.update(cx, |this, _cx| {
+                                    this.clear_last_error();
+                                });
+                            }
+
+                            cx.notify();
+                        },
+                    ))),
+            )
+            .into_any()
+    }
+
+    fn render_max_monthly_spend_reached_error(&self, cx: &mut ViewContext<Self>) -> AnyElement {
+        const ERROR_MESSAGE: &str = "You have reached your maximum monthly spend. Increase your spend limit to continue using Zed LLMs.";
+
+        v_flex()
+            .gap_0p5()
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .child(Icon::new(IconName::XCircle).color(Color::Error))
+                    .child(Label::new("Max Monthly Spend Reached").weight(FontWeight::MEDIUM)),
+            )
+            .child(
+                div()
+                    .id("error-message")
+                    .max_h_24()
+                    .overflow_y_scroll()
+                    .child(Label::new(ERROR_MESSAGE)),
+            )
+            .child(
+                h_flex()
+                    .justify_end()
+                    .mt_1()
+                    .child(
+                        Button::new("subscribe", "Update Monthly Spend Limit").on_click(
+                            cx.listener(|this, _, cx| {
+                                if let Some(thread) = this.thread.as_ref() {
+                                    thread.update(cx, |this, _cx| {
+                                        this.clear_last_error();
+                                    });
+                                }
+
+                                cx.open_url(&zed_urls::account_url(cx));
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(Button::new("dismiss", "Dismiss").on_click(cx.listener(
+                        |this, _, cx| {
+                            if let Some(thread) = this.thread.as_ref() {
+                                thread.update(cx, |this, _cx| {
+                                    this.clear_last_error();
+                                });
+                            }
+
+                            cx.notify();
+                        },
+                    ))),
+            )
+            .into_any()
+    }
+
+    fn render_error_message(
+        &self,
+        error_message: &SharedString,
+        cx: &mut ViewContext<Self>,
+    ) -> AnyElement {
+        v_flex()
+            .gap_0p5()
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .child(Icon::new(IconName::XCircle).color(Color::Error))
+                    .child(
+                        Label::new("Error interacting with language model")
+                            .weight(FontWeight::MEDIUM),
+                    ),
+            )
+            .child(
+                div()
+                    .id("error-message")
+                    .max_h_32()
+                    .overflow_y_scroll()
+                    .child(Label::new(error_message.clone())),
+            )
+            .child(
+                h_flex()
+                    .justify_end()
+                    .mt_1()
+                    .child(Button::new("dismiss", "Dismiss").on_click(cx.listener(
+                        |this, _, cx| {
+                            if let Some(thread) = this.thread.as_ref() {
+                                thread.update(cx, |this, _cx| {
+                                    this.clear_last_error();
+                                });
+                            }
+
+                            cx.notify();
+                        },
+                    ))),
+            )
+            .into_any()
     }
 }
 
 impl Render for AssistantPanel {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
-        let messages = self.thread.read(cx).messages().cloned().collect::<Vec<_>>();
-
         v_flex()
             .key_context("AssistantPanel2")
             .justify_between()
@@ -317,26 +597,17 @@ impl Render for AssistantPanel {
             .on_action(cx.listener(|this, _: &NewThread, cx| {
                 this.new_thread(cx);
             }))
+            .on_action(cx.listener(|_this, _: &OpenHistory, _cx| {
+                println!("Open History");
+            }))
             .child(self.render_toolbar(cx))
-            .child(
-                v_flex()
-                    .id("message-list")
-                    .gap_2()
-                    .size_full()
-                    .p_2()
-                    .overflow_y_scroll()
-                    .bg(cx.theme().colors().panel_background)
-                    .children(
-                        messages
-                            .into_iter()
-                            .map(|message| self.render_message(message, cx)),
-                    ),
-            )
+            .child(self.render_active_thread_or_empty_state(cx))
             .child(
                 h_flex()
                     .border_t_1()
                     .border_color(cx.theme().colors().border_variant)
                     .child(self.message_editor.clone()),
             )
+            .children(self.render_last_error(cx))
     }
 }

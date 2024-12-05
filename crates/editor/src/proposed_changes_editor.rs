@@ -4,12 +4,11 @@ use futures::{channel::mpsc, future::join_all};
 use gpui::{AppContext, EventEmitter, FocusableView, Model, Render, Subscription, Task, View};
 use language::{Buffer, BufferEvent, Capability};
 use multi_buffer::{ExcerptRange, MultiBuffer};
-use project::Project;
-use settings::Settings;
+use project::{buffer_store::BufferChangeSet, Project};
 use smol::stream::StreamExt;
 use std::{any::TypeId, ops::Range, rc::Rc, time::Duration};
 use text::ToOffset;
-use ui::{prelude::*, KeyBinding};
+use ui::{prelude::*, ButtonLike, KeyBinding};
 use workspace::{
     searchable::SearchableItemHandle, Item, ItemHandle as _, ToolbarItemEvent, ToolbarItemLocation,
     ToolbarItemView, Workspace,
@@ -35,11 +34,7 @@ struct BufferEntry {
     _subscription: Subscription,
 }
 
-pub struct ProposedChangesToolbarControls {
-    current_editor: Option<View<ProposedChangesEditor>>,
-}
-
-pub struct ProposedChangesToolbar {
+pub struct ProposedChangesEditorToolbar {
     current_editor: Option<View<ProposedChangesEditor>>,
 }
 
@@ -80,7 +75,7 @@ impl ProposedChangesEditor {
             title: title.into(),
             buffer_entries: Vec::new(),
             recalculate_diffs_tx,
-            _recalculate_diffs_task: cx.spawn(|_, mut cx| async move {
+            _recalculate_diffs_task: cx.spawn(|this, mut cx| async move {
                 let mut buffers_to_diff = HashSet::default();
                 while let Some(mut recalculate_diff) = recalculate_diffs_rx.next().await {
                     buffers_to_diff.insert(recalculate_diff.buffer);
@@ -101,12 +96,37 @@ impl ProposedChangesEditor {
                         }
                     }
 
-                    join_all(buffers_to_diff.drain().filter_map(|buffer| {
-                        buffer
-                            .update(&mut cx, |buffer, cx| buffer.recalculate_diff(cx))
-                            .ok()?
-                    }))
-                    .await;
+                    let recalculate_diff_futures = this
+                        .update(&mut cx, |this, cx| {
+                            buffers_to_diff
+                                .drain()
+                                .filter_map(|buffer| {
+                                    let buffer = buffer.read(cx);
+                                    let base_buffer = buffer.base_buffer()?;
+                                    let buffer = buffer.text_snapshot();
+                                    let change_set = this.editor.update(cx, |editor, _| {
+                                        Some(
+                                            editor
+                                                .diff_map
+                                                .diff_bases
+                                                .get(&buffer.remote_id())?
+                                                .change_set
+                                                .clone(),
+                                        )
+                                    })?;
+                                    Some(change_set.update(cx, |change_set, cx| {
+                                        change_set.set_base_text(
+                                            base_buffer.read(cx).text(),
+                                            buffer,
+                                            cx,
+                                        )
+                                    }))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .ok()?;
+
+                    join_all(recalculate_diff_futures).await;
                 }
                 None
             }),
@@ -159,6 +179,7 @@ impl ProposedChangesEditor {
         });
 
         let mut buffer_entries = Vec::new();
+        let mut new_change_sets = Vec::new();
         for location in locations {
             let branch_buffer;
             if let Some(ix) = self
@@ -171,6 +192,15 @@ impl ProposedChangesEditor {
                 buffer_entries.push(entry);
             } else {
                 branch_buffer = location.buffer.update(cx, |buffer, cx| buffer.branch(cx));
+                new_change_sets.push(cx.new_model(|cx| {
+                    let mut change_set = BufferChangeSet::new(branch_buffer.read(cx));
+                    let _ = change_set.set_base_text(
+                        location.buffer.read(cx).text(),
+                        branch_buffer.read(cx).text_snapshot(),
+                        cx,
+                    );
+                    change_set
+                }));
                 buffer_entries.push(BufferEntry {
                     branch: branch_buffer.clone(),
                     base: location.buffer.clone(),
@@ -192,7 +222,10 @@ impl ProposedChangesEditor {
 
         self.buffer_entries = buffer_entries;
         self.editor.update(cx, |editor, cx| {
-            editor.change_selections(None, cx, |selections| selections.refresh())
+            editor.change_selections(None, cx, |selections| selections.refresh());
+            for change_set in new_change_sets {
+                editor.diff_map.add_change_set(change_set, cx)
+            }
         });
     }
 
@@ -222,20 +255,16 @@ impl ProposedChangesEditor {
                     })
                     .ok();
             }
-            BufferEvent::DiffBaseChanged => {
-                self.recalculate_diffs_tx
-                    .unbounded_send(RecalculateDiff {
-                        buffer,
-                        debounce: false,
-                    })
-                    .ok();
-            }
+            // BufferEvent::DiffBaseChanged => {
+            //     self.recalculate_diffs_tx
+            //         .unbounded_send(RecalculateDiff {
+            //             buffer,
+            //             debounce: false,
+            //         })
+            //         .ok();
+            // }
             _ => (),
         }
-    }
-
-    fn all_changes_accepted(&self) -> bool {
-        false // In the future, we plan to compute this based on the current state of patches.
     }
 }
 
@@ -260,11 +289,7 @@ impl Item for ProposedChangesEditor {
     type Event = EditorEvent;
 
     fn tab_icon(&self, _cx: &ui::WindowContext) -> Option<Icon> {
-        if self.all_changes_accepted() {
-            Some(Icon::new(IconName::Check).color(Color::Success))
-        } else {
-            Some(Icon::new(IconName::ZedAssistant))
-        }
+        Some(Icon::new(IconName::Diff))
     }
 
     fn tab_content_text(&self, _cx: &WindowContext) -> Option<SharedString> {
@@ -330,7 +355,7 @@ impl Item for ProposedChangesEditor {
     }
 }
 
-impl ProposedChangesToolbarControls {
+impl ProposedChangesEditorToolbar {
     pub fn new() -> Self {
         Self {
             current_editor: None,
@@ -346,97 +371,28 @@ impl ProposedChangesToolbarControls {
     }
 }
 
-impl Render for ProposedChangesToolbarControls {
+impl Render for ProposedChangesEditorToolbar {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
-        if let Some(editor) = &self.current_editor {
-            let focus_handle = editor.focus_handle(cx);
-            let action = &ApplyAllDiffHunks;
-            let keybinding = KeyBinding::for_action_in(action, &focus_handle, cx);
+        let button_like = ButtonLike::new("apply-changes").child(Label::new("Apply All"));
 
-            let editor = editor.read(cx);
+        match &self.current_editor {
+            Some(editor) => {
+                let focus_handle = editor.focus_handle(cx);
+                let keybinding = KeyBinding::for_action_in(&ApplyAllDiffHunks, &focus_handle, cx)
+                    .map(|binding| binding.into_any_element());
 
-            let apply_all_button = if editor.all_changes_accepted() {
-                None
-            } else {
-                Some(
-                    Button::new("apply-changes", "Apply All")
-                        .style(ButtonStyle::Filled)
-                        .key_binding(keybinding)
-                        .on_click(move |_event, cx| focus_handle.dispatch_action(action, cx)),
-                )
-            };
-
-            h_flex()
-                .gap_1()
-                .children([apply_all_button].into_iter().flatten())
-                .into_any_element()
-        } else {
-            gpui::Empty.into_any_element()
+                button_like.children(keybinding).on_click({
+                    move |_event, cx| focus_handle.dispatch_action(&ApplyAllDiffHunks, cx)
+                })
+            }
+            None => button_like.disabled(true),
         }
     }
 }
 
-impl EventEmitter<ToolbarItemEvent> for ProposedChangesToolbarControls {}
+impl EventEmitter<ToolbarItemEvent> for ProposedChangesEditorToolbar {}
 
-impl ToolbarItemView for ProposedChangesToolbarControls {
-    fn set_active_pane_item(
-        &mut self,
-        active_pane_item: Option<&dyn workspace::ItemHandle>,
-        _cx: &mut ViewContext<Self>,
-    ) -> workspace::ToolbarItemLocation {
-        self.current_editor =
-            active_pane_item.and_then(|item| item.downcast::<ProposedChangesEditor>());
-        self.get_toolbar_item_location()
-    }
-}
-
-impl ProposedChangesToolbar {
-    pub fn new() -> Self {
-        Self {
-            current_editor: None,
-        }
-    }
-
-    fn get_toolbar_item_location(&self) -> ToolbarItemLocation {
-        if self.current_editor.is_some() {
-            ToolbarItemLocation::PrimaryLeft
-        } else {
-            ToolbarItemLocation::Hidden
-        }
-    }
-}
-
-impl Render for ProposedChangesToolbar {
-    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
-        if let Some(editor) = &self.current_editor {
-            let editor = editor.read(cx);
-            let all_changes_accepted = editor.all_changes_accepted();
-            let icon = if all_changes_accepted {
-                Icon::new(IconName::Check).color(Color::Success)
-            } else {
-                Icon::new(IconName::ZedAssistant)
-            };
-
-            h_flex()
-                .gap_2p5()
-                .font(theme::ThemeSettings::get_global(cx).buffer_font.clone())
-                .child(icon.size(IconSize::Small))
-                .child(
-                    Label::new(editor.title.clone())
-                        .color(Color::Muted)
-                        .single_line()
-                        .strikethrough(all_changes_accepted),
-                )
-                .into_any_element()
-        } else {
-            gpui::Empty.into_any_element()
-        }
-    }
-}
-
-impl EventEmitter<ToolbarItemEvent> for ProposedChangesToolbar {}
-
-impl ToolbarItemView for ProposedChangesToolbar {
+impl ToolbarItemView for ProposedChangesEditorToolbar {
     fn set_active_pane_item(
         &mut self,
         active_pane_item: Option<&dyn workspace::ItemHandle>,
@@ -455,7 +411,7 @@ impl BranchBufferSemanticsProvider {
         positions: &[text::Anchor],
         cx: &AppContext,
     ) -> Option<Model<Buffer>> {
-        let base_buffer = buffer.read(cx).diff_base_buffer()?;
+        let base_buffer = buffer.read(cx).base_buffer()?;
         let version = base_buffer.read(cx).version();
         if positions
             .iter()

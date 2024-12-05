@@ -5,18 +5,35 @@ use assistant_tool::ToolWorkingSet;
 use collections::HashMap;
 use futures::future::Shared;
 use futures::{FutureExt as _, StreamExt as _};
-use gpui::{AppContext, EventEmitter, ModelContext, Task};
+use gpui::{AppContext, EventEmitter, ModelContext, SharedString, Task};
 use language_model::{
     LanguageModel, LanguageModelCompletionEvent, LanguageModelRequest, LanguageModelRequestMessage,
     LanguageModelToolResult, LanguageModelToolUse, LanguageModelToolUseId, MessageContent, Role,
     StopReason,
 };
+use language_models::provider::cloud::{MaxMonthlySpendReachedError, PaymentRequiredError};
 use serde::{Deserialize, Serialize};
 use util::post_inc;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy)]
 pub enum RequestKind {
     Chat,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Serialize, Deserialize)]
+pub struct ThreadId(Arc<str>);
+
+impl ThreadId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4().to_string().into())
+    }
+}
+
+impl std::fmt::Display for ThreadId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Serialize, Deserialize)]
@@ -38,6 +55,7 @@ pub struct Message {
 
 /// A thread of conversation with the LLM.
 pub struct Thread {
+    id: ThreadId,
     messages: Vec<Message>,
     next_message_id: MessageId,
     completion_count: usize,
@@ -51,6 +69,7 @@ pub struct Thread {
 impl Thread {
     pub fn new(tools: Arc<ToolWorkingSet>, _cx: &mut ModelContext<Self>) -> Self {
         Self {
+            id: ThreadId::new(),
             messages: Vec::new(),
             next_message_id: MessageId(0),
             completion_count: 0,
@@ -60,6 +79,18 @@ impl Thread {
             tool_results_by_message: HashMap::default(),
             pending_tool_uses_by_id: HashMap::default(),
         }
+    }
+
+    pub fn id(&self) -> &ThreadId {
+        &self.id
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+
+    pub fn message(&self, id: MessageId) -> Option<&Message> {
+        self.messages.iter().find(|message| message.id == id)
     }
 
     pub fn messages(&self) -> impl Iterator<Item = &Message> {
@@ -74,12 +105,23 @@ impl Thread {
         self.pending_tool_uses_by_id.values().collect()
     }
 
-    pub fn insert_user_message(&mut self, text: impl Into<String>) {
+    pub fn insert_user_message(&mut self, text: impl Into<String>, cx: &mut ModelContext<Self>) {
+        self.insert_message(Role::User, text, cx)
+    }
+
+    pub fn insert_message(
+        &mut self,
+        role: Role,
+        text: impl Into<String>,
+        cx: &mut ModelContext<Self>,
+    ) {
+        let id = self.next_message_id.post_inc();
         self.messages.push(Message {
-            id: self.next_message_id.post_inc(),
-            role: Role::User,
+            id,
+            role,
             text: text.into(),
         });
+        cx.emit(ThreadEvent::MessageAdded(id));
     }
 
     pub fn to_completion_request(
@@ -149,11 +191,13 @@ impl Thread {
                     thread.update(&mut cx, |thread, cx| {
                         match event {
                             LanguageModelCompletionEvent::StartMessage { .. } => {
+                                let id = thread.next_message_id.post_inc();
                                 thread.messages.push(Message {
-                                    id: thread.next_message_id.post_inc(),
+                                    id,
                                     role: Role::Assistant,
                                     text: String::new(),
                                 });
+                                cx.emit(ThreadEvent::MessageAdded(id));
                             }
                             LanguageModelCompletionEvent::Stop(reason) => {
                                 stop_reason = reason;
@@ -162,6 +206,10 @@ impl Thread {
                                 if let Some(last_message) = thread.messages.last_mut() {
                                     if last_message.role == Role::Assistant {
                                         last_message.text.push_str(&chunk);
+                                        cx.emit(ThreadEvent::StreamedAssistantText(
+                                            last_message.id,
+                                            chunk,
+                                        ));
                                     }
                                 }
                             }
@@ -210,29 +258,28 @@ impl Thread {
             let result = stream_completion.await;
 
             thread
-                .update(&mut cx, |_thread, cx| {
-                    let error_message = if let Some(error) = result.as_ref().err() {
-                        let error_message = error
-                            .chain()
-                            .map(|err| err.to_string())
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        Some(error_message)
-                    } else {
-                        None
-                    };
-
-                    if let Some(error_message) = error_message {
-                        eprintln!("Completion failed: {error_message:?}");
-                    }
-
-                    if let Ok(stop_reason) = result {
-                        match stop_reason {
-                            StopReason::ToolUse => {
-                                cx.emit(ThreadEvent::UsePendingTools);
-                            }
-                            StopReason::EndTurn => {}
-                            StopReason::MaxTokens => {}
+                .update(&mut cx, |_thread, cx| match result.as_ref() {
+                    Ok(stop_reason) => match stop_reason {
+                        StopReason::ToolUse => {
+                            cx.emit(ThreadEvent::UsePendingTools);
+                        }
+                        StopReason::EndTurn => {}
+                        StopReason::MaxTokens => {}
+                    },
+                    Err(error) => {
+                        if error.is::<PaymentRequiredError>() {
+                            cx.emit(ThreadEvent::ShowError(ThreadError::PaymentRequired));
+                        } else if error.is::<MaxMonthlySpendReachedError>() {
+                            cx.emit(ThreadEvent::ShowError(ThreadError::MaxMonthlySpendReached));
+                        } else {
+                            let error_message = error
+                                .chain()
+                                .map(|err| err.to_string())
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            cx.emit(ThreadEvent::ShowError(ThreadError::Message(
+                                SharedString::from(error_message.clone()),
+                            )));
                         }
                     }
                 })
@@ -306,8 +353,18 @@ impl Thread {
 }
 
 #[derive(Debug, Clone)]
+pub enum ThreadError {
+    PaymentRequired,
+    MaxMonthlySpendReached,
+    Message(SharedString),
+}
+
+#[derive(Debug, Clone)]
 pub enum ThreadEvent {
+    ShowError(ThreadError),
     StreamedCompletion,
+    StreamedAssistantText(MessageId, String),
+    MessageAdded(MessageId),
     UsePendingTools,
     ToolFinished {
         #[allow(unused)]
