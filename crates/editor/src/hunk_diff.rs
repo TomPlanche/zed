@@ -1,8 +1,7 @@
 use collections::{HashMap, HashSet};
 use git::diff::DiffHunkStatus;
 use gpui::{
-    Action, AnchorCorner, AppContext, CursorStyle, Hsla, Model, MouseButton, Subscription, Task,
-    View,
+    Action, AppContext, Corner, CursorStyle, Hsla, Model, MouseButton, Subscription, Task, View,
 };
 use language::{Buffer, BufferId, Point};
 use multi_buffer::{
@@ -89,7 +88,6 @@ impl DiffMap {
         self.snapshot
             .0
             .insert(buffer_id, change_set.read(cx).diff_to_buffer.clone());
-        Editor::sync_expanded_diff_hunks(self, buffer_id, cx);
         self.diff_bases.insert(
             buffer_id,
             DiffBaseState {
@@ -105,6 +103,7 @@ impl DiffMap {
                 change_set,
             },
         );
+        Editor::sync_expanded_diff_hunks(self, buffer_id, cx);
     }
 
     pub fn hunks(&self, include_folded: bool) -> impl Iterator<Item = &ExpandedHunk> {
@@ -726,7 +725,7 @@ impl Editor {
                                                             .shape(IconButtonShape::Square)
                                                             .icon_size(IconSize::Small)
                                                             .style(ButtonStyle::Subtle)
-                                                            .selected(
+                                                            .toggle_state(
                                                                 hunk_controls_menu_handle
                                                                     .is_deployed(),
                                                             )
@@ -743,7 +742,7 @@ impl Editor {
                                                                 },
                                                             ),
                                                         )
-                                                        .anchor(AnchorCorner::TopRight)
+                                                        .anchor(Corner::TopRight)
                                                         .with_handle(hunk_controls_menu_handle)
                                                         .menu(move |cx| {
                                                             let focus = focus.clone();
@@ -1156,6 +1155,11 @@ fn editor_with_deleted_text(
         editor.set_soft_wrap_mode(language::language_settings::SoftWrap::None, cx);
         editor.set_show_wrap_guides(false, cx);
         editor.set_show_gutter(false, cx);
+        editor.set_show_line_numbers(false, cx);
+        editor.set_show_scrollbars(false, cx);
+        editor.set_show_runnables(false, cx);
+        editor.set_show_git_diff_gutter(false, cx);
+        editor.set_show_code_actions(false, cx);
         editor.scroll_manager.set_forbid_vertical_scroll(true);
         editor.set_read_only(true);
         editor.set_show_inline_completions(Some(false), cx);
@@ -1167,7 +1171,7 @@ fn editor_with_deleted_text(
             false,
             cx,
         );
-        editor.set_current_line_highlight(Some(CurrentLineHighlight::None)); //
+        editor.set_current_line_highlight(Some(CurrentLineHighlight::None));
         editor
             ._subscriptions
             .extend([cx.on_blur(&editor.focus_handle, |editor, cx| {

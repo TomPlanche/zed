@@ -47,9 +47,9 @@ use gpui::{
 use itertools::Itertools;
 use language::{
     language_settings::InlayHintKind, proto::split_operations, Buffer, BufferEvent,
-    CachedLspAdapter, Capability, CodeLabel, DiagnosticEntry, Documentation, File as _, Language,
-    LanguageName, LanguageRegistry, PointUtf16, ToOffset, ToPointUtf16, Toolchain, ToolchainList,
-    Transaction, Unclipped,
+    CachedLspAdapter, Capability, CodeLabel, Documentation, File as _, Language, LanguageName,
+    LanguageRegistry, PointUtf16, ToOffset, ToPointUtf16, Toolchain, ToolchainList, Transaction,
+    Unclipped,
 };
 use lsp::{
     CodeActionKind, CompletionContext, CompletionItemKind, DocumentHighlightKind, LanguageServer,
@@ -57,7 +57,7 @@ use lsp::{
 };
 use lsp_command::*;
 use node_runtime::NodeRuntime;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 pub use prettier_store::PrettierStore;
 use project_settings::{ProjectSettings, SettingsObserver, SettingsObserverEvent};
 use remote::{SshConnectionOptions, SshRemoteClient};
@@ -73,8 +73,10 @@ use snippet::Snippet;
 use snippet_provider::SnippetProvider;
 use std::{
     borrow::Cow,
+    cell::RefCell,
     ops::Range,
     path::{Component, Path, PathBuf},
+    rc::Rc,
     str,
     sync::Arc,
     time::Duration,
@@ -1205,13 +1207,6 @@ impl Project {
                 .await
                 .unwrap();
 
-            project.update(cx, |project, cx| {
-                let tree_id = tree.read(cx).id();
-                project.environment.update(cx, |environment, _| {
-                    environment.set_cached(&[(tree_id, HashMap::default())])
-                });
-            });
-
             tree.update(cx, |tree, _| tree.as_local().unwrap().scan_complete())
                 .await;
         }
@@ -1252,6 +1247,10 @@ impl Project {
 
     pub fn opened_buffers(&self, cx: &AppContext) -> Vec<Model<Buffer>> {
         self.buffer_store.read(cx).buffers().collect()
+    }
+
+    pub fn environment(&self) -> &Model<ProjectEnvironment> {
+        &self.environment
     }
 
     pub fn cli_environment(&self, cx: &AppContext) -> Option<HashMap<String, String>> {
@@ -1843,6 +1842,19 @@ impl Project {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open_local_buffer_with_lsp(
+        &mut self,
+        abs_path: impl AsRef<Path>,
+        cx: &mut ModelContext<Self>,
+    ) -> Task<Result<(Model<Buffer>, lsp_store::OpenLspBufferHandle)>> {
+        if let Some((worktree, relative_path)) = self.find_worktree(abs_path.as_ref(), cx) {
+            self.open_buffer_with_lsp((worktree.read(cx).id(), relative_path), cx)
+        } else {
+            Task::ready(Err(anyhow!("no such path")))
+        }
+    }
+
     pub fn open_buffer(
         &mut self,
         path: impl Into<ProjectPath>,
@@ -1854,6 +1866,23 @@ impl Project {
 
         self.buffer_store.update(cx, |buffer_store, cx| {
             buffer_store.open_buffer(path.into(), cx)
+        })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open_buffer_with_lsp(
+        &mut self,
+        path: impl Into<ProjectPath>,
+        cx: &mut ModelContext<Self>,
+    ) -> Task<Result<(Model<Buffer>, lsp_store::OpenLspBufferHandle)>> {
+        let buffer = self.open_buffer(path, cx);
+        let lsp_store = self.lsp_store().clone();
+        cx.spawn(|_, mut cx| async move {
+            let buffer = buffer.await?;
+            let handle = lsp_store.update(&mut cx, |lsp_store, cx| {
+                lsp_store.register_buffer_with_language_servers(&buffer, cx)
+            })?;
+            Ok((buffer, handle))
         })
     }
 
@@ -2506,7 +2535,7 @@ impl Project {
                         .read(cx)
                         .list_toolchains(worktree_id, language_name, cx)
                 })
-                .unwrap_or(Task::Ready(None))
+                .ok()?
                 .await
             })
         } else {
@@ -2566,31 +2595,6 @@ impl Project {
     pub fn reset_last_formatting_failure(&self, cx: &mut AppContext) {
         self.lsp_store
             .update(cx, |store, _| store.reset_last_formatting_failure());
-    }
-
-    pub fn update_diagnostics(
-        &mut self,
-        language_server_id: LanguageServerId,
-        params: lsp::PublishDiagnosticsParams,
-        disk_based_sources: &[String],
-        cx: &mut ModelContext<Self>,
-    ) -> Result<()> {
-        self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.update_diagnostics(language_server_id, params, disk_based_sources, cx)
-        })
-    }
-
-    pub fn update_diagnostic_entries(
-        &mut self,
-        server_id: LanguageServerId,
-        abs_path: PathBuf,
-        version: Option<i32>,
-        diagnostics: Vec<DiagnosticEntry<Unclipped<PointUtf16>>>,
-        cx: &mut ModelContext<Project>,
-    ) -> Result<(), anyhow::Error> {
-        self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.update_diagnostic_entries(server_id, abs_path, version, diagnostics, cx)
-        })
     }
 
     pub fn reload_buffers(
@@ -2863,7 +2867,7 @@ impl Project {
         &self,
         buffer: Model<Buffer>,
         completion_indices: Vec<usize>,
-        completions: Arc<RwLock<Box<[Completion]>>>,
+        completions: Rc<RefCell<Box<[Completion]>>>,
         cx: &mut ModelContext<Self>,
     ) -> Task<Result<bool>> {
         self.lsp_store.update(cx, |lsp_store, cx| {
@@ -3446,12 +3450,9 @@ impl Project {
     }
 
     pub fn diagnostic_summary(&self, include_ignored: bool, cx: &AppContext) -> DiagnosticSummary {
-        let mut summary = DiagnosticSummary::default();
-        for (_, _, path_summary) in self.diagnostic_summaries(include_ignored, cx) {
-            summary.error_count += path_summary.error_count;
-            summary.warning_count += path_summary.warning_count;
-        }
-        summary
+        self.lsp_store
+            .read(cx)
+            .diagnostic_summary(include_ignored, cx)
     }
 
     pub fn diagnostic_summaries<'a>(
@@ -4163,13 +4164,6 @@ impl Project {
         Ok(())
     }
 
-    pub fn language_servers<'a>(
-        &'a self,
-        cx: &'a AppContext,
-    ) -> impl 'a + Iterator<Item = (LanguageServerId, LanguageServerName, WorktreeId)> {
-        self.lsp_store.read(cx).language_servers()
-    }
-
     pub fn supplementary_language_servers<'a>(
         &'a self,
         cx: &'a AppContext,
@@ -4185,14 +4179,14 @@ impl Project {
         self.lsp_store.read(cx).language_server_for_id(id)
     }
 
-    pub fn language_servers_for_buffer<'a>(
+    pub fn language_servers_for_local_buffer<'a>(
         &'a self,
         buffer: &'a Buffer,
         cx: &'a AppContext,
     ) -> impl Iterator<Item = (&'a Arc<CachedLspAdapter>, &'a Arc<LanguageServer>)> {
         self.lsp_store
             .read(cx)
-            .language_servers_for_buffer(buffer, cx)
+            .language_servers_for_local_buffer(buffer, cx)
     }
 
     pub fn buffer_store(&self) -> &Model<BufferStore> {
