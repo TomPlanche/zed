@@ -81,6 +81,47 @@ The `alt-` modifier can be used on many layouts to generate a different key. For
 
 It is possible to match against typing a modifier key on its own. For example `shift shift` can be used to implement JetBrains search everywhere shortcut. In this case the binding happens on key release instead of keypress.
 
+### Disabling Keybindings
+
+If you need to disable a default keybinding (for example, because it conflicts with your keyboard layout or operating system shortcuts), you can set it to a disable signal. Zed supports several ways to disable keybindings:
+
+```json
+[
+  {
+    "bindings": {
+      "alt-b": null,        // Using null
+      "alt-n": false,       // Using false  
+      "ctrl-k": ""          // Using empty string
+    }
+  }
+]
+```
+
+All three methods (`null`, `false`, and empty string `""`) have the same effect - they completely disable the keybinding so it won't interfere with your typing or other applications.
+
+#### International Keyboard Layouts
+
+Users with non-QWERTY keyboards may find that some default keybindings conflict with their typing. Common conflicts include:
+
+- `alt-b` and `alt-n` for typing brackets `{` and `}` on Czech keyboards
+- Various `alt` combinations on other international layouts
+- Conflicts with system-level input method shortcuts
+
+To resolve these conflicts, simply disable the problematic bindings:
+
+```json
+[
+  {
+    "bindings": {
+      "alt-b": null,
+      "alt-n": null
+    }
+  }
+]
+```
+
+You can find what default keybindings exist by looking at the default keymaps for [MacOS](https://github.com/zed-industries/zed/blob/main/assets/keymaps/default-macos.json) or [Linux](https://github.com/zed-industries/zed/blob/main/assets/keymaps/default-linux.json), or by using the `dev: Open Key Context View` command to see what bindings are active in your current context.
+
 ### Contexts
 
 If a binding group has a `"context"` key it will be matched against the currently active contexts in Zed.

@@ -362,11 +362,20 @@ impl KeymapFile {
                     Some(action_input_string),
                 )
             }
+            Value::String(name) if name.is_empty() => {
+                // Empty string disables the keybinding
+                (Ok(NoAction.boxed_clone()), None)
+            }
             Value::String(name) => (cx.build_action(&name, None), None),
+            Value::Bool(false) => {
+                // false disables the keybinding
+                (Ok(NoAction.boxed_clone()), None)
+            }
             Value::Null => (Ok(NoAction.boxed_clone()), None),
             _ => {
                 return Err(format!(
-                    "expected two-element array of `[name, input]`. \
+                    "expected action name string, two-element array of `[name, input]`, \
+                    or a disable signal (null, false, or empty string). \
                     Instead found {}.",
                     MarkdownInlineCode(&action.0.to_string())
                 ));
@@ -376,9 +385,15 @@ impl KeymapFile {
         let action = match build_result {
             Ok(action) => action,
             Err(ActionBuildError::NotFound { name }) => {
+                let suggestion = if name.is_empty() {
+                    "Use null, false, or remove the binding entirely to disable it."
+                } else {
+                    "Check the action name for typos, or use null to disable this keybinding."
+                };
                 return Err(format!(
-                    "didn't find an action named {}.",
-                    MarkdownInlineCode(&format!("\"{}\"", &name))
+                    "didn't find an action named {}. {}",
+                    MarkdownInlineCode(&format!("\"{}\"", &name)),
+                    suggestion
                 ));
             }
             Err(ActionBuildError::BuildError { name, error }) => match action_input_string {
@@ -1041,6 +1056,44 @@ mod tests {
                   "
         };
         KeymapFile::parse(json).unwrap();
+    }
+
+    #[gpui::test]
+    fn can_disable_keybindings_with_multiple_syntaxes(cx: &mut gpui::TestAppContext) {        
+        let json = indoc::indoc! {"[
+              {
+                \"bindings\": {
+                  \"ctrl-a\": null,
+                  \"ctrl-b\": false,
+                  \"ctrl-c\": \"\"
+                }
+              }
+            ]"
+        };
+        
+        cx.update(|cx| {
+            let result = KeymapFile::load(json, cx);
+            
+            match result {
+                crate::KeymapFileLoadResult::Success { key_bindings } => {
+                    assert_eq!(key_bindings.len(), 3);
+                    
+                    // Check that all disabled bindings use NoAction
+                    for binding in &key_bindings {
+                        assert!(gpui::is_no_action(&*binding.action()));
+                    }
+                }
+                crate::KeymapFileLoadResult::SomeFailedToLoad { key_bindings, .. } => {
+                    assert_eq!(key_bindings.len(), 3);
+                    
+                    // Check that all disabled bindings use NoAction
+                    for binding in &key_bindings {
+                        assert!(gpui::is_no_action(&*binding.action()));
+                    }
+                }
+                _ => panic!("Expected successful or partial parsing"),
+            }
+        });
     }
 
     #[track_caller]
