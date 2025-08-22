@@ -66,7 +66,8 @@ use workspace::{
     DraggedSelection, OpenInTerminal, OpenOptions, OpenVisible, PreviewTabsSettings, SelectedEntry,
     Workspace,
     dock::{DockPosition, Panel, PanelEvent},
-    notifications::{DetachAndPromptErr, NotifyTaskExt},
+    notifications::{NotifyTaskExt, NotificationId},
+    Toast,
 };
 use worktree::CreatedEntry;
 
@@ -656,35 +657,44 @@ impl ProjectPanel {
                             let entry_id = entry.id;
                             let is_via_ssh = project.read(cx).is_via_ssh();
 
-                            workspace
-                                .open_path_preview(
-                                    ProjectPath {
-                                        worktree_id,
-                                        path: file_path.clone(),
-                                    },
-                                    None,
-                                    focus_opened_item,
-                                    allow_preview,
-                                    true,
-                                    window, cx,
-                                )
-                                .detach_and_prompt_err("Failed to open file", window, cx, move |e, _, _| {
-                                    match e.error_code() {
+                            let open_task = workspace.open_path_preview(
+                                ProjectPath {
+                                    worktree_id,
+                                    path: file_path.clone(),
+                                },
+                                None,
+                                focus_opened_item,
+                                allow_preview,
+                                true,
+                                window, cx,
+                            );
+                            
+                            cx.spawn(async move |workspace, cx| {
+                                if let Err(e) = open_task.await {
+                                    let error_message = match e.error_code() {
                                         ErrorCode::Disconnected => if is_via_ssh {
-                                            Some("Disconnected from SSH host".to_string())
+                                            "Disconnected from SSH host".to_string()
                                         } else {
-                                            Some("Disconnected from remote project".to_string())
+                                            "Disconnected from remote project".to_string()
                                         },
-                                        ErrorCode::UnsharedItem => Some(format!(
+                                        ErrorCode::UnsharedItem => format!(
                                             "{} is not shared by the host. This could be because it has been marked as `private`",
                                             file_path.display()
-                                        )),
-                                        // See note in worktree.rs where this error originates. Returning Some in this case prevents
-                                        // the error popup from saying "Try Again", which is a red herring in this case
-                                        ErrorCode::Internal if e.to_string().contains("File is too large to load") => Some(e.to_string()),
-                                        _ => None,
-                                    }
-                                });
+                                        ),
+                                        // See note in worktree.rs where this error originates
+                                        ErrorCode::Internal if e.to_string().contains("File is too large to load") => e.to_string(),
+                                        _ => format!("Failed to open file: {}", e),
+                                    };
+                                    
+                                    workspace.update(cx, |workspace, cx| {
+                                        workspace.show_toast(
+                                            Toast::new(NotificationId::unique::<()>(), error_message)
+                                                .autohide(),
+                                            cx
+                                        );
+                                    }).ok();
+                                }
+                            }).detach();
 
                             if let Some(project_panel) = project_panel.upgrade() {
                                 // Always select and mark the entry, regardless of whether it is opened or not.
