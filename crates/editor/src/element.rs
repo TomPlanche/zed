@@ -432,6 +432,15 @@ impl EditorElement {
         register_action(editor, window, Editor::open_selected_filename);
         register_action(editor, window, Editor::fold);
         register_action(editor, window, Editor::fold_at_level);
+        register_action(editor, window, Editor::fold_at_level_1);
+        register_action(editor, window, Editor::fold_at_level_2);
+        register_action(editor, window, Editor::fold_at_level_3);
+        register_action(editor, window, Editor::fold_at_level_4);
+        register_action(editor, window, Editor::fold_at_level_5);
+        register_action(editor, window, Editor::fold_at_level_6);
+        register_action(editor, window, Editor::fold_at_level_7);
+        register_action(editor, window, Editor::fold_at_level_8);
+        register_action(editor, window, Editor::fold_at_level_9);
         register_action(editor, window, Editor::fold_all);
         register_action(editor, window, Editor::fold_function_bodies);
         register_action(editor, window, Editor::fold_recursive);
@@ -1625,12 +1634,13 @@ impl EditorElement {
                             .map(|text| {
                                 let len = text.len();
 
-                                let font = cursor_row_layout
+                                let mut font = cursor_row_layout
                                     .font_id_for_index(cursor_column)
                                     .and_then(|cursor_font_id| {
                                         window.text_system().get_font_for_id(cursor_font_id)
                                     })
                                     .unwrap_or(self.style.text.font());
+                                font.features = self.style.text.font_features.clone();
 
                                 // Invert the text color for the block cursor. Ensure that the text
                                 // color is opaque enough to be visible against the background color.

@@ -1,4 +1,4 @@
-use std::{fmt, path::Path, sync::LazyLock};
+use std::{borrow::Cow, fmt, path::Path, sync::LazyLock};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShellKind {
@@ -241,6 +241,7 @@ impl ShellKind {
             input.into()
         }
     }
+
     fn to_powershell_variable(input: &str) -> String {
         if let Some(var_str) = input.strip_prefix("${") {
             if var_str.find(':').is_none() {
@@ -352,11 +353,47 @@ impl ShellKind {
         }
     }
 
-    pub fn command_prefix(&self) -> Option<char> {
+    pub const fn command_prefix(&self) -> Option<char> {
         match self {
             ShellKind::PowerShell => Some('&'),
             ShellKind::Nushell => Some('^'),
             _ => None,
+        }
+    }
+
+    pub const fn sequential_commands_separator(&self) -> char {
+        match self {
+            ShellKind::Cmd => '&',
+            _ => ';',
+        }
+    }
+
+    pub fn try_quote<'a>(&self, arg: &'a str) -> Option<Cow<'a, str>> {
+        shlex::try_quote(arg).ok().map(|arg| match self {
+            // If we are running in PowerShell, we want to take extra care when escaping strings.
+            // In particular, we want to escape strings with a backtick (`) rather than a backslash (\).
+            // TODO double escaping backslashes is not necessary in PowerShell and probably CMD
+            ShellKind::PowerShell => Cow::Owned(arg.replace("\\\"", "`\"")),
+            _ => arg,
+        })
+    }
+
+    pub const fn activate_keyword(&self) -> &'static str {
+        match self {
+            ShellKind::Cmd => "",
+            ShellKind::Nushell => "overlay use",
+            ShellKind::PowerShell => ".",
+            ShellKind::Fish => "source",
+            ShellKind::Csh => "source",
+            ShellKind::Tcsh => "source",
+            ShellKind::Posix | ShellKind::Rc => "source",
+        }
+    }
+
+    pub const fn clear_screen_command(&self) -> &'static str {
+        match self {
+            ShellKind::Cmd => "cls",
+            _ => "clear",
         }
     }
 }

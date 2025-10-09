@@ -58,7 +58,7 @@ mod prompts;
 use crate::util::atomic_incr_if_not_zero;
 pub use prompts::*;
 
-pub(crate) const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1024.), px(700.));
+pub(crate) const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
 
 /// Represents the two different phases when dispatching events.
 #[derive(Default, Copy, Clone, Debug, Eq, PartialEq)]
@@ -4631,6 +4631,14 @@ pub struct WindowHandle<V> {
     #[deref_mut]
     pub(crate) any_handle: AnyWindowHandle,
     state_type: PhantomData<V>,
+}
+
+impl<V> Debug for WindowHandle<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowHandle")
+            .field("any_handle", &self.any_handle.id.as_u64())
+            .finish()
+    }
 }
 
 impl<V: 'static + Render> WindowHandle<V> {

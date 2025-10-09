@@ -778,6 +778,9 @@ dependencies = [
  "serde",
  "serde_repr",
  "url",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols 0.32.6",
  "zbus",
 ]
 
@@ -806,8 +809,8 @@ dependencies = [
  "anyhow",
  "futures 0.3.31",
  "gpui",
+ "log",
  "net",
- "proto",
  "smol",
  "tempfile",
  "windows 0.61.1",
@@ -3314,6 +3317,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "codestral"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "edit_prediction",
+ "edit_prediction_context",
+ "futures 0.3.31",
+ "gpui",
+ "language",
+ "language_models",
+ "log",
+ "mistral",
+ "serde",
+ "serde_json",
+ "smol",
+ "text",
+ "workspace-hack",
+ "zed-http-client",
+]
+
+[[package]]
 name = "collab"
 version = "0.44.0"
 dependencies = [
@@ -5112,6 +5136,7 @@ dependencies = [
  "anyhow",
  "client",
  "cloud_llm_client",
+ "codestral",
  "copilot",
  "edit_prediction",
  "editor",
@@ -5164,6 +5189,9 @@ dependencies = [
  "strum 0.27.1",
  "text",
  "tree-sitter",
+ "tree-sitter-c",
+ "tree-sitter-cpp",
+ "tree-sitter-go",
  "workspace-hack",
  "zed-collections",
  "zed-util",
@@ -5918,7 +5946,6 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "serde",
- "settings",
  "theme",
  "workspace-hack",
  "zed-util",
@@ -6988,7 +7015,7 @@ dependencies = [
 
 [[package]]
 name = "gpui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "as-raw-xcb-connection",
@@ -7063,7 +7090,7 @@ dependencies = [
  "wayland-backend",
  "wayland-client",
  "wayland-cursor",
- "wayland-protocols",
+ "wayland-protocols 0.31.2",
  "wayland-protocols-plasma",
  "windows 0.61.1",
  "windows-core 0.61.0",
@@ -8024,6 +8051,7 @@ dependencies = [
  "serde_json",
  "serde_json_lenient",
  "theme",
+ "title_bar",
  "ui",
  "workspace",
  "workspace-hack",
@@ -8776,7 +8804,6 @@ dependencies = [
  "serde_json",
  "serde_json_lenient",
  "settings",
- "shlex",
  "smol",
  "task",
  "text",
@@ -10533,20 +10560,15 @@ dependencies = [
 name = "onboarding"
 version = "0.1.0"
 dependencies = [
- "ai_onboarding",
  "anyhow",
  "client",
  "component",
  "db",
  "documented",
- "editor",
  "fs",
  "fuzzy",
  "git",
  "gpui",
- "itertools 0.14.0",
- "language",
- "language_model",
  "menu",
  "notifications",
  "picker",
@@ -12918,7 +12940,6 @@ dependencies = [
  "fs",
  "futures 0.3.31",
  "gpui",
- "itertools 0.14.0",
  "log",
  "parking_lot",
  "paths",
@@ -14361,19 +14382,22 @@ dependencies = [
  "anyhow",
  "assets",
  "client",
- "command_palette_hooks",
  "editor",
  "feature_flags",
  "fs",
  "futures 0.3.31",
  "fuzzy",
  "gpui",
+ "heck 0.5.0",
  "language",
+ "log",
  "menu",
  "node_runtime",
  "paths",
  "pretty_assertions",
  "project",
+ "schemars 1.0.1",
+ "search",
  "serde",
  "session",
  "settings",
@@ -14384,6 +14408,7 @@ dependencies = [
  "workspace",
  "workspace-hack",
  "zed-util",
+ "zed_actions",
  "zlog",
 ]
 
@@ -16938,8 +16963,7 @@ dependencies = [
 [[package]]
 name = "tree-sitter-typescript"
 version = "0.23.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c5f76ed8d947a75cc446d5fccd8b602ebf0cde64ccf2ffa434d873d7a575eff"
+source = "git+https://github.com/zed-industries/tree-sitter-typescript?rev=e2c53597d6a5d9cf7bbe8dccde576fe1e46c5899#e2c53597d6a5d9cf7bbe8dccde576fe1e46c5899"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -17134,8 +17158,10 @@ version = "0.1.0"
 dependencies = [
  "component",
  "editor",
+ "fuzzy",
  "gpui",
  "menu",
+ "picker",
  "settings",
  "theme",
  "ui",
@@ -18167,6 +18193,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "wayland-protocols"
+version = "0.32.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0781cf46869b37e36928f7b432273c0995aa8aed9552c556fb18754420541efc"
+dependencies = [
+ "bitflags 2.9.0",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+]
+
+[[package]]
 name = "wayland-protocols-plasma"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18175,7 +18213,7 @@ dependencies = [
  "bitflags 2.9.0",
  "wayland-backend",
  "wayland-client",
- "wayland-protocols",
+ "wayland-protocols 0.31.2",
  "wayland-scanner",
 ]
 
@@ -19424,6 +19462,7 @@ dependencies = [
  "aho-corasick",
  "anstream",
  "arrayvec",
+ "ashpd 0.11.0",
  "async-compression",
  "async-std",
  "async-tungstenite",
@@ -19596,6 +19635,8 @@ dependencies = [
  "wasmtime",
  "wasmtime-cranelift",
  "wasmtime-environ",
+ "wayland-backend",
+ "wayland-sys",
  "winapi",
  "windows-core 0.61.0",
  "windows-numerics",
@@ -19603,6 +19644,7 @@ dependencies = [
  "windows-sys 0.52.0",
  "windows-sys 0.59.0",
  "windows-sys 0.61.0",
+ "zbus_macros",
  "zeroize",
  "zvariant",
 ]
@@ -19960,7 +20002,7 @@ dependencies = [
 
 [[package]]
 name = "zed"
-version = "0.208.0"
+version = "0.209.0"
 dependencies = [
  "acp_tools",
  "activity_indicator",
@@ -19969,6 +20011,7 @@ dependencies = [
  "agent_ui",
  "anyhow",
  "ashpd 0.11.0",
+ "askpass",
  "assets",
  "assistant_tools",
  "audio",
@@ -19982,6 +20025,7 @@ dependencies = [
  "clap",
  "cli",
  "client",
+ "codestral",
  "collab_ui",
  "command_palette",
  "component",
@@ -20686,6 +20730,8 @@ dependencies = [
  "indoc",
  "language",
  "log",
+ "multi_buffer",
+ "ordered-float 2.10.1",
  "pretty_assertions",
  "project",
  "serde",
@@ -20739,6 +20785,7 @@ dependencies = [
  "terminal_view",
  "watch",
  "workspace-hack",
+ "zed-collections",
  "zed-util",
  "zeta",
  "zeta2",
