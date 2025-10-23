@@ -3091,13 +3091,12 @@ impl GitPanel {
             IconButton::new("generate-commit-message", IconName::AiEdit)
                 .shape(ui::IconButtonShape::Square)
                 .icon_color(Color::Muted)
-                .tooltip(move |window, cx| {
+                .tooltip(move |_window, cx| {
                     if can_commit {
                         Tooltip::for_action_in(
                             "Generate Commit Message",
                             &git::GenerateCommitMessage,
                             &editor_focus_handle,
-                            window,
                             cx,
                         )
                     } else {
@@ -3459,12 +3458,11 @@ impl GitPanel {
                                 panel_icon_button("expand-commit-editor", IconName::Maximize)
                                     .icon_size(IconSize::Small)
                                     .size(ui::ButtonSize::Default)
-                                    .tooltip(move |window, cx| {
+                                    .tooltip(move |_window, cx| {
                                         Tooltip::for_action_in(
                                             "Open Commit Modal",
                                             &git::ExpandCommitEditor,
                                             &expand_tooltip_focus_handle,
-                                            window,
                                             cx,
                                         )
                                     })
@@ -3526,7 +3524,7 @@ impl GitPanel {
                 .disabled(!can_commit || self.modal_open)
                 .tooltip({
                     let handle = commit_tooltip_focus_handle.clone();
-                    move |window, cx| {
+                    move |_window, cx| {
                         if can_commit {
                             Tooltip::with_meta_in(
                                 tooltip,
@@ -3537,7 +3535,6 @@ impl GitPanel {
                                     if signoff { " --signoff" } else { "" }
                                 ),
                                 &handle.clone(),
-                                window,
                                 cx,
                             )
                         } else {
@@ -3611,9 +3608,10 @@ impl GitPanel {
                             let repo = active_repository.downgrade();
                             move |_, window, cx| {
                                 CommitView::open(
-                                    commit.clone(),
+                                    commit.sha.to_string(),
                                     repo.clone(),
                                     workspace.clone(),
+                                    None,
                                     window,
                                     cx,
                                 );
@@ -3639,7 +3637,7 @@ impl GitPanel {
                         panel_icon_button("undo", IconName::Undo)
                             .icon_size(IconSize::XSmall)
                             .icon_color(Color::Muted)
-                            .tooltip(move |window, cx| {
+                            .tooltip(move |_window, cx| {
                                 Tooltip::with_meta(
                                     "Uncommit",
                                     Some(&git::Uncommit),
@@ -3648,7 +3646,6 @@ impl GitPanel {
                                     } else {
                                         "git reset HEAD^"
                                     },
-                                    window,
                                     cx,
                                 )
                             })
@@ -4119,13 +4116,13 @@ impl GitPanel {
                                     .ok();
                                 }
                             })
-                            .tooltip(move |window, cx| {
+                            .tooltip(move |_window, cx| {
                                 let is_staged = entry_staging.is_fully_staged();
 
                                 let action = if is_staged { "Unstage" } else { "Stage" };
                                 let tooltip_name = action.to_string();
 
-                                Tooltip::for_action(tooltip_name, &ToggleStaged, window, cx)
+                                Tooltip::for_action(tooltip_name, &ToggleStaged, cx)
                             }),
                     ),
             )
@@ -4417,6 +4414,10 @@ impl editor::Addon for GitPanelAddon {
 impl Panel for GitPanel {
     fn persistent_name() -> &'static str {
         "GitPanel"
+    }
+
+    fn panel_key() -> &'static str {
+        GIT_PANEL_KEY
     }
 
     fn position(&self, _: &Window, cx: &App) -> DockPosition {
@@ -4973,6 +4974,7 @@ mod tests {
     use settings::SettingsStore;
     use theme::LoadThemes;
     use util::path;
+    use util::rel_path::rel_path;
 
     use super::*;
 
@@ -5592,6 +5594,68 @@ mod tests {
             panel.set_amend_pending(false, cx);
             let current_message = panel.commit_message_buffer(cx).read(cx).text();
             assert_eq!(current_message, "");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_open_diff(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "tracked": "tracked\n",
+                "untracked": "\n",
+            }),
+        )
+        .await;
+
+        fs.set_head_and_index_for_repo(
+            path!("/project/.git").as_ref(),
+            &[("tracked", "old tracked\n".into())],
+        );
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let workspace =
+            cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let cx = &mut VisualTestContext::from_window(*workspace, cx);
+        let panel = workspace.update(cx, GitPanel::new).unwrap();
+
+        // Enable the `sort_by_path` setting and wait for entries to be updated,
+        // as there should no longer be separators between Tracked and Untracked
+        // files.
+        cx.update(|_window, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git_panel.get_or_insert_default().sort_by_path = Some(true);
+                })
+            });
+        });
+
+        cx.update_window_entity(&panel, |panel, _, _| {
+            std::mem::replace(&mut panel.update_visible_entries_task, Task::ready(()))
+        })
+        .await;
+
+        // Confirm that `Open Diff` still works for the untracked file, updating
+        // the Project Diff's active path.
+        panel.update_in(cx, |panel, window, cx| {
+            panel.selected_entry = Some(1);
+            panel.open_diff(&Confirm, window, cx);
+        });
+        cx.run_until_parked();
+
+        let _ = workspace.update(cx, |workspace, _window, cx| {
+            let active_path = workspace
+                .item_of_type::<ProjectDiff>(cx)
+                .expect("ProjectDiff should exist")
+                .read(cx)
+                .active_path(cx)
+                .expect("active_path should exist");
+
+            assert_eq!(active_path.path, rel_path("untracked").into_arc());
         });
     }
 
