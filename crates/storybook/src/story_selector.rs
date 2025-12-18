@@ -13,6 +13,7 @@ use ui::prelude::*;
 pub enum ComponentStory {
     ApplicationMenu,
     AutoHeightEditor,
+    CircleProgressBar,
     CollabNotification,
     ContextMenu,
     Cursor,
@@ -33,6 +34,7 @@ impl ComponentStory {
                 .new(|cx| title_bar::ApplicationMenuStory::new(window, cx))
                 .into(),
             Self::AutoHeightEditor => AutoHeightEditorStory::new(window, cx).into(),
+            Self::CircleProgressBar => cx.new(|cx| ui::CircleProgressBarStory::new(cx)).into(),
             Self::CollabNotification => cx
                 .new(|_| collab_ui::notifications::CollabNotificationStory)
                 .into(),
