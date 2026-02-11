@@ -2184,6 +2184,12 @@ impl Pane {
 
         let path_style = project.read_with(cx, |project, cx| project.path_style(cx));
         if save_intent == SaveIntent::Skip {
+            let can_save = cx.update(|_window, cx| item.can_save(cx))?;
+            if can_save {
+                pane.update_in(cx, |_, window, cx| item.reload(project, window, cx))?
+                    .await
+                    .log_err();
+            }
             return Ok(true);
         };
         let Some(item_ix) = pane
@@ -2332,13 +2338,20 @@ impl Pane {
                         match answer {
                             Ok(0) => {}
                             Ok(1) => {
-                                // Don't save this file
+                                // Don't save this file - reload from disk to discard changes
                                 pane.update_in(cx, |pane, _, cx| {
                                     if pane.is_tab_pinned(item_ix) && !item.can_save(cx) {
                                         pane.pinned_tab_count -= 1;
                                     }
                                 })
                                 .log_err();
+                                if can_save {
+                                    pane.update_in(cx, |_, window, cx| {
+                                        item.reload(project.clone(), window, cx)
+                                    })?
+                                    .await
+                                    .log_err();
+                                }
                                 return Ok(true);
                             }
                             _ => return Ok(false), // Cancel
@@ -7330,6 +7343,86 @@ mod tests {
         cx.simulate_prompt_answer("Cancel");
         close_task.await.unwrap();
         assert_item_labels(&pane, ["Dirty*^"], cx);
+    }
+
+    #[gpui::test]
+    async fn test_discard_all_reloads_from_disk(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let item_a = add_labeled_item(&pane, "A", true, cx);
+        item_a.update(cx, |item, cx| {
+            item.project_items
+                .push(TestProjectItem::new_dirty(1, "A.txt", cx))
+        });
+        let item_b = add_labeled_item(&pane, "B", true, cx);
+        item_b.update(cx, |item, cx| {
+            item.project_items
+                .push(TestProjectItem::new_dirty(2, "B.txt", cx))
+        });
+        assert_item_labels(&pane, ["A^", "B*^"], cx);
+
+        let close_task = pane.update_in(cx, |pane, window, cx| {
+            pane.close_all_items(
+                &CloseAllItems {
+                    save_intent: None,
+                    close_pinned: false,
+                },
+                window,
+                cx,
+            )
+        });
+
+        cx.executor().run_until_parked();
+        cx.simulate_prompt_answer("Discard all");
+        close_task.await.unwrap();
+        assert_item_labels(&pane, [], cx);
+
+        item_a.read_with(cx, |item, _| {
+            assert_eq!(item.reload_count, 1, "item A should have been reloaded");
+            assert!(!item.is_dirty, "item A should no longer be dirty after reload");
+        });
+        item_b.read_with(cx, |item, _| {
+            assert_eq!(item.reload_count, 1, "item B should have been reloaded");
+            assert!(!item.is_dirty, "item B should no longer be dirty after reload");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_dont_save_single_file_reloads_from_disk(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let item = add_labeled_item(&pane, "Dirty", true, cx);
+        item.update(cx, |item, cx| {
+            item.project_items
+                .push(TestProjectItem::new_dirty(1, "Dirty.txt", cx))
+        });
+        assert_item_labels(&pane, ["Dirty*^"], cx);
+
+        let close_task = pane.update_in(cx, |pane, window, cx| {
+            pane.close_item_by_id(item.item_id(), SaveIntent::Close, window, cx)
+        });
+
+        cx.executor().run_until_parked();
+        cx.simulate_prompt_answer("Don't Save");
+        close_task.await.unwrap();
+        assert_item_labels(&pane, [], cx);
+
+        item.read_with(cx, |item, _| {
+            assert_eq!(item.reload_count, 1, "item should have been reloaded");
+            assert!(!item.is_dirty, "item should no longer be dirty after reload");
+        });
     }
 
     #[gpui::test]
