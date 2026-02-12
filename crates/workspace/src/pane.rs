@@ -7257,11 +7257,17 @@ mod tests {
 
         item_a.read_with(cx, |item, _| {
             assert_eq!(item.reload_count, 1, "item A should have been reloaded");
-            assert!(!item.is_dirty, "item A should no longer be dirty after reload");
+            assert!(
+                !item.is_dirty,
+                "item A should no longer be dirty after reload"
+            );
         });
         item_b.read_with(cx, |item, _| {
             assert_eq!(item.reload_count, 1, "item B should have been reloaded");
-            assert!(!item.is_dirty, "item B should no longer be dirty after reload");
+            assert!(
+                !item.is_dirty,
+                "item B should no longer be dirty after reload"
+            );
         });
     }
 
@@ -7293,7 +7299,10 @@ mod tests {
 
         item.read_with(cx, |item, _| {
             assert_eq!(item.reload_count, 1, "item should have been reloaded");
-            assert!(!item.is_dirty, "item should no longer be dirty after reload");
+            assert!(
+                !item.is_dirty,
+                "item should no longer be dirty after reload"
+            );
         });
     }
 
