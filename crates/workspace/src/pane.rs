@@ -7365,10 +7365,7 @@ mod tests {
         assert_item_labels(&pane, [], cx);
 
         singleton_item.read_with(cx, |item, _| {
-            assert_eq!(
-                item.reload_count, 1,
-                "singleton should have been reloaded"
-            );
+            assert_eq!(item.reload_count, 1, "singleton should have been reloaded");
             assert!(
                 !item.is_dirty,
                 "singleton should no longer be dirty after reload"
