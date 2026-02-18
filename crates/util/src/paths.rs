@@ -15,6 +15,7 @@ use std::{
     path::{Path, PathBuf},
     sync::LazyLock,
 };
+use unicode_normalization::UnicodeNormalization;
 
 use crate::rel_path::RelPathBuf;
 use crate::{rel_path::RelPath, shell::ShellKind};
@@ -1026,8 +1027,8 @@ where
 /// 4. For non-numeric characters, using case-insensitive comparison
 /// 5. If everything is equal case-insensitively, using case-sensitive comparison as final tie-breaker
 pub fn natural_sort(a: &str, b: &str) -> Ordering {
-    let mut a_iter = a.chars().peekable();
-    let mut b_iter = b.chars().peekable();
+    let mut a_iter = a.nfd().peekable();
+    let mut b_iter = b.nfd().peekable();
 
     loop {
         match (a_iter.peek(), b_iter.peek()) {
@@ -1043,10 +1044,9 @@ pub fn natural_sort(a: &str, b: &str) -> Ordering {
                         ordering => return ordering,
                     }
                 } else {
-                    match a_char
-                        .to_ascii_lowercase()
-                        .cmp(&b_char.to_ascii_lowercase())
-                    {
+                    let a_lower = a_char.to_lowercase().next().unwrap_or(a_char);
+                    let b_lower = b_char.to_lowercase().next().unwrap_or(b_char);
+                    match a_lower.cmp(&b_lower) {
                         Ordering::Equal => {
                             a_iter.next();
                             b_iter.next();
@@ -1063,7 +1063,12 @@ pub fn natural_sort(a: &str, b: &str) -> Ordering {
 /// This is useful when comparing individual path components where we want to keep walking
 /// deeper components before deciding on casing.
 fn natural_sort_no_tiebreak(a: &str, b: &str) -> Ordering {
-    if a.eq_ignore_ascii_case(b) {
+    let are_equal = a
+        .nfd()
+        .flat_map(char::to_lowercase)
+        .eq(b.nfd().flat_map(char::to_lowercase));
+
+    if are_equal {
         Ordering::Equal
     } else {
         natural_sort(a, b)
@@ -2713,6 +2718,51 @@ mod tests {
         assert_eq!(natural_sort("file-1a", "file-1b"), Ordering::Less);
         assert_eq!(natural_sort("file-1.2", "file-1.10"), Ordering::Less);
         assert_eq!(natural_sort("file-1.10", "file-1.2"), Ordering::Greater);
+    }
+
+    #[perf]
+    fn test_natural_sort_i18n() {
+        // German umlauts should sort near their base characters (issue #48865)
+        assert_eq!(natural_sort("o", "ö"), Ordering::Less);
+        assert_eq!(natural_sort("ö", "u"), Ordering::Less);
+        assert_eq!(natural_sort("ö", "z"), Ordering::Less);
+
+        // Full German sort order: a, o, ö, u, z
+        let mut words = vec!["z", "u", "o", "ö", "a"];
+        words.sort_by(|a, b| natural_sort(a, b));
+        assert_eq!(words, vec!["a", "o", "ö", "u", "z"]);
+
+        // Other diacritics sort near base character
+        assert_eq!(natural_sort("a", "ä"), Ordering::Less);
+        assert_eq!(natural_sort("ä", "b"), Ordering::Less);
+        assert_eq!(natural_sort("u", "ü"), Ordering::Less);
+
+        // Case variants of umlauts: lowercase before uppercase (tiebreaker)
+        assert_eq!(natural_sort("ö", "Ö"), Ordering::Less);
+        assert_eq!(natural_sort("Ö", "ö"), Ordering::Greater);
+    }
+
+    #[perf]
+    fn test_compare_rel_paths_mixed_i18n() {
+        // Verifies issue #48865: project panel i18n sort order
+        let mut files = vec![
+            (RelPath::unix("z.txt").unwrap(), true),
+            (RelPath::unix("u.txt").unwrap(), true),
+            (RelPath::unix("ö.txt").unwrap(), true),
+            (RelPath::unix("o.txt").unwrap(), true),
+            (RelPath::unix("a.txt").unwrap(), true),
+        ];
+        files.sort_by(|a, b| compare_rel_paths_mixed(*a, *b));
+        assert_eq!(
+            files,
+            vec![
+                (RelPath::unix("a.txt").unwrap(), true),
+                (RelPath::unix("o.txt").unwrap(), true),
+                (RelPath::unix("ö.txt").unwrap(), true),
+                (RelPath::unix("u.txt").unwrap(), true),
+                (RelPath::unix("z.txt").unwrap(), true),
+            ]
+        );
     }
 
     #[test]
