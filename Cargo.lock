@@ -18353,6 +18353,7 @@ dependencies = [
  "tempfile",
  "tendril",
  "unicase",
+ "unicode-normalization",
  "url",
  "util_macros",
  "walkdir",
