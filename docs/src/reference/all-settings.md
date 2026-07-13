@@ -2890,7 +2890,7 @@ Unspecified values have a `false` value, hints won't be toggled if all the modif
 
 ### Path
 
-- Description: The path of the directory where journal entries are stored. If an invalid path is specified, the journal will fall back to using `~` (the home directory).
+- Description: The path of the directory where journal entries are stored. If an invalid path is specified, the journal will fall back to using `~` (the home directory). This setting can be overridden per-project in a worktree's `.zed/settings.json`, in which case the active project's setting is used.
 - Setting: `path`
 - Default: `~`
 
@@ -2900,7 +2900,7 @@ Unspecified values have a `false` value, hints won't be toggled if all the modif
 
 ### Hour Format
 
-- Description: The format to use for displaying hours in the journal.
+- Description: The format to use for displaying hours in the journal. This setting can be overridden per-project in a worktree's `.zed/settings.json`, in which case the active project's setting is used.
 - Setting: `hour_format`
 - Default: `hour12`
 

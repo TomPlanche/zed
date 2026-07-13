@@ -9375,6 +9375,7 @@ dependencies = [
  "serde",
  "settings",
  "shellexpand",
+ "util",
  "workspace",
 ]
 

@@ -3,12 +3,13 @@ use editor::scroll::Autoscroll;
 use editor::{Editor, SelectionEffects};
 use gpui::{App, AppContext as _, Context, TaskExt, Window, actions};
 pub use settings::HourFormat;
-use settings::{RegisterSetting, Settings};
+use settings::{RegisterSetting, Settings, SettingsLocation};
 use std::{
     fs::OpenOptions,
     path::{Path, PathBuf},
     sync::Arc,
 };
+use util::rel_path::RelPath;
 use workspace::{AppState, OpenResult, OpenVisible, Workspace};
 
 actions!(
@@ -34,7 +35,7 @@ pub struct JournalSettings {
 
 impl settings::Settings for JournalSettings {
     fn from_settings(content: &settings::SettingsContent) -> Self {
-        let journal = content.journal.clone().unwrap();
+        let journal = content.project.journal.clone().unwrap();
 
         Self {
             path: journal.path.unwrap(),
@@ -55,7 +56,28 @@ pub fn init(_: Arc<AppState>, cx: &mut App) {
 }
 
 pub fn new_journal_entry(workspace: &Workspace, window: &mut Window, cx: &mut App) {
-    let settings = JournalSettings::get_global(cx);
+    // `journal: new journal entry` is a global command, not tied to a buffer, so
+    // resolve the setting against the focused item's worktree to pick which
+    // project's local `.zed/settings.json` applies. When nothing is focused (e.g.
+    // an empty window or a non-file pane), fall back to the first project root,
+    // and to user/global settings when no worktree is open at all.
+    let active_project_path = workspace
+        .active_item(cx)
+        .and_then(|item| item.project_path(cx));
+    let location = match &active_project_path {
+        Some(project_path) => Some(SettingsLocation {
+            worktree_id: project_path.worktree_id,
+            path: project_path.path.as_ref(),
+        }),
+        None => workspace
+            .visible_worktrees(cx)
+            .next()
+            .map(|worktree| SettingsLocation {
+                worktree_id: worktree.read(cx).id(),
+                path: RelPath::empty(),
+            }),
+    };
+    let settings = JournalSettings::get(location, cx);
     let journal_dir = match journal_dir(&settings.path) {
         Some(journal_dir) => journal_dir,
         None => {
@@ -295,6 +317,82 @@ mod tests {
             assert!(result.is_some());
             let path = result.unwrap();
             assert_eq!(path, PathBuf::from("C:\\Users\\user\\Documents\\journal"));
+        }
+    }
+
+    mod journal_settings_tests {
+        use super::super::{HourFormat, JournalSettings};
+        use settings::{
+            LocalSettingsKind, LocalSettingsPath, SettingsLocation, SettingsStore, WorktreeId,
+            default_settings,
+        };
+        use util::rel_path::rel_path;
+
+        // Both journal settings live in `ProjectSettingsContent`, so a worktree's
+        // `.zed/settings.json` must be able to override each of them, and a partial
+        // override must fall back to the user/global value for the fields it omits.
+        #[gpui::test]
+        fn test_journal_settings_are_project_local(cx: &mut gpui::App) {
+            let mut store = SettingsStore::new(cx, &default_settings());
+            store.register_setting::<JournalSettings>();
+
+            store
+                .set_user_settings(
+                    r#"{ "journal": { "path": "~/user-journal", "hour_format": "hour24" } }"#,
+                    cx,
+                )
+                .unwrap();
+
+            let global = store.get::<JournalSettings>(None);
+            assert_eq!(global.path, "~/user-journal");
+            assert_eq!(global.hour_format, HourFormat::Hour24);
+
+            let worktree_id = WorktreeId::from_usize(1);
+            // `project_a` overrides both fields.
+            store
+                .set_local_settings(
+                    worktree_id,
+                    LocalSettingsPath::InWorktree(rel_path("project_a").into()),
+                    LocalSettingsKind::Settings,
+                    Some(r#"{ "journal": { "path": "/tmp/journal-a", "hour_format": "hour12" } }"#),
+                    cx,
+                )
+                .unwrap();
+            // `project_b` overrides only `hour_format`, leaving `path` inherited.
+            store
+                .set_local_settings(
+                    worktree_id,
+                    LocalSettingsPath::InWorktree(rel_path("project_b").into()),
+                    LocalSettingsKind::Settings,
+                    Some(r#"{ "journal": { "hour_format": "hour12" } }"#),
+                    cx,
+                )
+                .unwrap();
+
+            let in_project_a = store.get::<JournalSettings>(Some(SettingsLocation {
+                worktree_id,
+                path: rel_path("project_a/entry.md"),
+            }));
+            assert_eq!(in_project_a.path, "/tmp/journal-a");
+            assert_eq!(in_project_a.hour_format, HourFormat::Hour12);
+
+            let in_project_b = store.get::<JournalSettings>(Some(SettingsLocation {
+                worktree_id,
+                path: rel_path("project_b/entry.md"),
+            }));
+            assert_eq!(
+                in_project_b.path, "~/user-journal",
+                "path should fall back to the user setting when only hour_format is overridden"
+            );
+            assert_eq!(in_project_b.hour_format, HourFormat::Hour12);
+
+            // A path with no local settings falls back to the user/global values.
+            let unscoped = store.get::<JournalSettings>(Some(SettingsLocation {
+                worktree_id,
+                path: rel_path("elsewhere/entry.md"),
+            }));
+            assert_eq!(unscoped.path, "~/user-journal");
+            assert_eq!(unscoped.hour_format, HourFormat::Hour24);
         }
     }
 }

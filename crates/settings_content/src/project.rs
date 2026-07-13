@@ -13,8 +13,8 @@ use settings_macros::{MergeFrom, with_fallible_options};
 use util::serde::default_true;
 
 use crate::{
-    AllLanguageSettingsContent, DelayMs, ExtendingVec, ParseStatus, ProjectTerminalSettingsContent,
-    RootUserSettings, SaturatingBool, fallible_options,
+    AllLanguageSettingsContent, DelayMs, ExtendingVec, JournalSettingsContent, ParseStatus,
+    ProjectTerminalSettingsContent, RootUserSettings, SaturatingBool, fallible_options,
 };
 
 #[with_fallible_options]
@@ -85,6 +85,9 @@ pub struct ProjectSettingsContent {
     ///
     /// Default: false
     pub disable_ai: Option<SaturatingBool>,
+
+    /// Configuration for the journal.
+    pub journal: Option<JournalSettingsContent>,
 }
 
 /// When to scan content of linked directories.
