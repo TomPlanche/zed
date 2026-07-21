@@ -490,7 +490,7 @@ Project panel can be shown/hidden with {#action project_panel::ToggleFocus} ({#k
     // Sort order for entries (directories_first, mixed, files_first)
     "sort_mode": "directories_first",
     // Whether to sort file and folder names case-sensitively.
-    // "default": Case-insensitive natural sort, lowercase preferred in ties.
+    // "default": Case-insensitive natural sort, lowercase preferred in ties, letters ordered by system locale.
     // "upper":   Uppercase names grouped before lowercase, natural sort within.
     // "lower":   Lowercase names grouped before uppercase, natural sort within.
     // "unicode":  Pure Unicode codepoint comparison, no case folding.

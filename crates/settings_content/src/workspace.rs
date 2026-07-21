@@ -892,6 +892,9 @@ pub enum ProjectPanelSortMode {
 pub enum ProjectPanelSortOrder {
     /// Case-insensitive natural sort with lowercase preferred in ties.
     /// Numbers in file names are compared by value (e.g., `file2` before `file10`).
+    /// Letters are ordered using the system locale, so accented letters sort where
+    /// speakers of that language expect them (e.g., `ö` after `o` in German,
+    /// but after `z` in Swedish).
     #[default]
     Default,
     /// Uppercase names are grouped before lowercase names, with case-insensitive

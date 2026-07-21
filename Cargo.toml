@@ -629,6 +629,8 @@ html5ever = "0.27.0"
 http = "1.1"
 http-body = "1.0"
 httparse = "1.10"
+icu_collator = "2.0"
+icu_locale_core = "2.0"
 idna = "1.0"
 ignore = "0.4.22"
 # image's default features minus "avif", which only adds an encoder (rav1e);

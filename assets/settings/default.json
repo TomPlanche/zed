@@ -882,7 +882,8 @@
     // Whether to sort file and folder names case-sensitively in the project panel.
     // This setting can take four values:
     //
-    // 1. Case-insensitive natural sort with lowercase preferred in ties (default):
+    // 1. Case-insensitive natural sort with lowercase preferred in ties, ordering
+    //    letters by the system locale (default):
     //    "default"
     // 2. Uppercase names are grouped before lowercase names,
     //    with case-insensitive natural sort within each group:

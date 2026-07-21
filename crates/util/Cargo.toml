@@ -25,6 +25,8 @@ dunce.workspace = true
 futures-lite.workspace = true
 futures.workspace = true
 globset.workspace = true
+icu_collator.workspace = true
+icu_locale_core.workspace = true
 itertools.workspace = true
 log.workspace = true
 rand = { workspace = true, optional = true }
@@ -35,6 +37,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_json_lenient.workspace = true
 shlex.workspace = true
+sys-locale.workspace = true
 take-until.workspace = true
 tempfile.workspace = true
 unicase.workspace = true

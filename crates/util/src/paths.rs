@@ -1,4 +1,10 @@
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+use icu_collator::{
+    Collator, CollatorBorrowed, CollatorPreferences,
+    options::{CollatorOptions, Strength},
+    preferences::CollationCaseFirst,
+};
+use icu_locale_core::Locale;
 use itertools::Itertools;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -839,8 +845,8 @@ impl Default for PathMatcher {
 /// Compares two sequences of consecutive digits for natural sorting.
 ///
 /// This function is a core component of natural sorting that handles numeric comparison
-/// in a way that feels natural to humans. It extracts and compares consecutive digit
-/// sequences from two iterators, handling various cases like leading zeros and very large numbers.
+/// in a way that feels natural to humans. It compares two runs of consecutive digits,
+/// handling various cases like leading zeros and very large numbers.
 ///
 /// # Behavior
 ///
@@ -861,49 +867,17 @@ impl Default for PathMatcher {
 ///
 /// # Implementation Details
 ///
-/// 1. Extracts consecutive digits into strings
-/// 2. Compares sequence lengths for leading zero handling
-/// 3. For equal lengths, compares digit by digit
-/// 4. For different lengths:
+/// 1. Compares sequence lengths for leading zero handling
+/// 2. For equal lengths, compares digit by digit
+/// 3. For different lengths:
 ///    - Attempts numeric comparison first (for numbers up to 2^128 - 1)
 ///    - Falls back to string comparison if numbers would overflow
-///
-/// The function advances both iterators past their respective numeric sequences,
-/// regardless of the comparison result.
-fn compare_numeric_segments<I>(
-    a_iter: &mut std::iter::Peekable<I>,
-    b_iter: &mut std::iter::Peekable<I>,
-) -> Ordering
-where
-    I: Iterator<Item = char>,
-{
-    // Collect all consecutive digits into strings
-    let mut a_num_str = String::new();
-    let mut b_num_str = String::new();
-
-    while let Some(&c) = a_iter.peek() {
-        if !c.is_ascii_digit() {
-            break;
-        }
-
-        a_num_str.push(c);
-        a_iter.next();
-    }
-
-    while let Some(&c) = b_iter.peek() {
-        if !c.is_ascii_digit() {
-            break;
-        }
-
-        b_num_str.push(c);
-        b_iter.next();
-    }
-
+fn compare_numeric_segments(a_num_str: &str, b_num_str: &str) -> Ordering {
     // First compare lengths (handle leading zeros)
     match a_num_str.len().cmp(&b_num_str.len()) {
         Ordering::Equal => {
             // Same length, compare digit by digit
-            match a_num_str.cmp(&b_num_str) {
+            match a_num_str.cmp(b_num_str) {
                 Ordering::Equal => Ordering::Equal,
                 ordering => ordering,
             }
@@ -919,16 +893,100 @@ where
                 }
             } else {
                 // If parsing fails (overflow), compare as strings
-                a_num_str.cmp(&b_num_str)
+                a_num_str.cmp(b_num_str)
             }
         }
     }
 }
 
+/// Locale-aware collators used to order the textual runs of a name.
+///
+/// Two strengths are kept because path comparison needs both a full ordering and a
+/// case-insensitive equality check, and a collator's strength is fixed at construction.
+struct Collation {
+    /// Tertiary strength distinguishes base letters, accents, and case. Used only for the
+    /// final tie-break, so that case never outranks a difference later in the name.
+    with_case: Option<CollatorBorrowed<'static>>,
+    /// Secondary strength distinguishes base letters and accents but ignores case.
+    ignoring_case: Option<CollatorBorrowed<'static>>,
+}
+
+impl Collation {
+    fn new(locale: &Locale) -> Self {
+        Self {
+            with_case: build_collator(locale, Strength::Tertiary),
+            ignoring_case: build_collator(locale, Strength::Secondary),
+        }
+    }
+
+    fn compare_ignoring_case(&self, a: &str, b: &str) -> Ordering {
+        match &self.ignoring_case {
+            Some(collator) => collator.compare(a, b),
+            None => compare_lowercased_codepoints(a, b),
+        }
+    }
+
+    fn compare_with_case(&self, a: &str, b: &str) -> Ordering {
+        match &self.with_case {
+            Some(collator) => collator.compare(a, b),
+            // Reversed so that lowercase, which has the higher codepoint, comes first.
+            None => b.cmp(a),
+        }
+    }
+}
+
+/// Fallback ordering used only if collation data cannot be loaded. Matches the
+/// locale-independent behavior Zed had before collation was introduced.
+fn compare_lowercased_codepoints(a: &str, b: &str) -> Ordering {
+    a.chars()
+        .map(|c| c.to_ascii_lowercase())
+        .cmp(b.chars().map(|c| c.to_ascii_lowercase()))
+}
+
+fn build_collator(locale: &Locale, strength: Strength) -> Option<CollatorBorrowed<'static>> {
+    let mut preferences = CollatorPreferences::from(locale);
+    // Zed orders lowercase before uppercase in every locale, so this overrides the
+    // locale-provided default (which is uppercase-first for Danish and Maltese).
+    preferences.case_first = Some(CollationCaseFirst::Lower);
+
+    let mut options = CollatorOptions::default();
+    options.strength = Some(strength);
+
+    Collator::try_new(preferences, options).ok()
+}
+
+fn system_locale() -> Locale {
+    sys_locale::get_locale()
+        .map(|reported| parse_locale_tag(&reported))
+        .unwrap_or(Locale::UNKNOWN)
+}
+
+/// Parses a locale tag as reported by the OS.
+///
+/// Platforms report POSIX-style tags such as `de_DE.UTF-8`, which are not valid BCP-47,
+/// so the encoding and modifier suffixes are dropped and the separator normalized first.
+/// An unrecognizable tag yields the root locale, whose collation is still a large
+/// improvement over ordering by codepoint.
+fn parse_locale_tag(tag: &str) -> Locale {
+    let normalized = tag
+        .split(['.', '@'])
+        .next()
+        .unwrap_or(tag)
+        .replace('_', "-");
+
+    Locale::try_from_str(&normalized).unwrap_or(Locale::UNKNOWN)
+}
+
+static COLLATION: LazyLock<Collation> = LazyLock::new(|| Collation::new(&system_locale()));
+
 /// Performs natural sorting comparison between two strings.
 ///
 /// Natural sorting is an ordering that handles numeric sequences in a way that matches human expectations.
 /// For example, "file2" comes before "file10" (unlike standard lexicographic sorting).
+///
+/// Text is ordered using Unicode collation tailored to the system locale, so accented
+/// letters sort where speakers of that language expect them. In German `ö` sorts between
+/// `o` and `u`, while in Swedish it sorts after `z`.
 ///
 /// # Characteristics
 ///
@@ -936,59 +994,74 @@ where
 /// * Numbers are compared by numeric value, not character by character
 /// * Leading zeros affect ordering when numeric values are equal
 /// * Can handle numbers larger than u128::MAX (falls back to string comparison)
-/// * When strings are equal case-insensitively, lowercase is prioritized (lowercase < uppercase)
+/// * When strings are equal under collation, a codepoint comparison breaks the tie
 ///
 /// # Algorithm
 ///
 /// The function works by:
-/// 1. Processing strings character by character in a case-insensitive manner
-/// 2. When encountering digits, treating consecutive digits as a single number
-/// 3. Comparing numbers by their numeric value rather than lexicographically
-/// 4. For non-numeric characters, using case-insensitive comparison
-/// 5. If everything is equal case-insensitively, using case-sensitive comparison as final tie-breaker
+/// 1. Splitting both strings into alternating runs of non-digits and digits
+/// 2. Comparing non-digit runs with the locale-aware collator, ignoring case
+/// 3. Comparing digit runs by their numeric value rather than lexicographically
+/// 4. If everything is equal ignoring case, comparing case as a tie-breaker
+/// 5. If the names are still equal, comparing codepoints so the order stays total
 pub fn natural_sort(a: &str, b: &str) -> Ordering {
-    let mut a_iter = a.chars().peekable();
-    let mut b_iter = b.chars().peekable();
+    natural_sort_in(&COLLATION, a, b)
+}
 
-    loop {
-        match (a_iter.peek(), b_iter.peek()) {
-            (None, None) => {
-                return b.cmp(a);
-            }
-            (None, _) => return Ordering::Less,
-            (_, None) => return Ordering::Greater,
-            (Some(&a_char), Some(&b_char)) => {
-                if a_char.is_ascii_digit() && b_char.is_ascii_digit() {
-                    match compare_numeric_segments(&mut a_iter, &mut b_iter) {
-                        Ordering::Equal => continue,
-                        ordering => return ordering,
-                    }
-                } else {
-                    match a_char
-                        .to_ascii_lowercase()
-                        .cmp(&b_char.to_ascii_lowercase())
-                    {
-                        Ordering::Equal => {
-                            a_iter.next();
-                            b_iter.next();
-                        }
-                        ordering => return ordering,
-                    }
-                }
-            }
-        }
-    }
+fn natural_sort_in(collation: &Collation, a: &str, b: &str) -> Ordering {
+    natural_sort_no_tiebreak_in(collation, a, b).then_with(|| {
+        collation
+            .compare_with_case(a, b)
+            // Canonically equivalent spellings compare equal under collation, so fall back
+            // to codepoints to keep the ordering a strict total order.
+            .then_with(|| b.cmp(a))
+    })
 }
 
 /// Case-insensitive natural sort without applying the final lowercase/uppercase tie-breaker.
 /// This is useful when comparing individual path components where we want to keep walking
 /// deeper components before deciding on casing.
 fn natural_sort_no_tiebreak(a: &str, b: &str) -> Ordering {
-    if a.eq_ignore_ascii_case(b) {
-        Ordering::Equal
-    } else {
-        natural_sort(a, b)
+    natural_sort_no_tiebreak_in(&COLLATION, a, b)
+}
+
+fn natural_sort_no_tiebreak_in(collation: &Collation, a: &str, b: &str) -> Ordering {
+    let mut a_rest = a;
+    let mut b_rest = b;
+
+    while !a_rest.is_empty() && !b_rest.is_empty() {
+        let (a_text, a_after_text) = split_leading_run(a_rest, false);
+        let (b_text, b_after_text) = split_leading_run(b_rest, false);
+
+        match collation.compare_ignoring_case(a_text, b_text) {
+            Ordering::Equal => {}
+            ordering => return ordering,
+        }
+
+        let (a_digits, a_after_digits) = split_leading_run(a_after_text, true);
+        let (b_digits, b_after_digits) = split_leading_run(b_after_text, true);
+
+        match compare_numeric_segments(a_digits, b_digits) {
+            Ordering::Equal => {}
+            ordering => return ordering,
+        }
+
+        a_rest = a_after_digits;
+        b_rest = b_after_digits;
     }
+
+    a_rest.is_empty().cmp(&b_rest.is_empty()).reverse()
+}
+
+/// Splits off the leading run of characters that are all digits, or all non-digits.
+///
+/// Each iteration of the sort loop takes one run of each kind, so the remainder always
+/// shrinks while the string is non-empty.
+fn split_leading_run(text: &str, digits: bool) -> (&str, &str) {
+    let end = text
+        .find(|c: char| c.is_ascii_digit() != digits)
+        .unwrap_or(text.len());
+    text.split_at(end)
 }
 
 fn stem_and_extension(filename: &str) -> (Option<&str>, Option<&str>) {
@@ -1020,6 +1093,9 @@ fn stem_and_extension(filename: &str) -> (Option<&str>, Option<&str>) {
 pub enum SortOrder {
     /// Case-insensitive natural sort with lowercase preferred in ties.
     /// Numbers in file names are compared by value (e.g., `file2` before `file10`).
+    /// Letters are ordered using the system locale, so accented letters sort where
+    /// speakers of that language expect them (e.g., `ö` after `o` in German,
+    /// but after `z` in Swedish).
     #[default]
     Default,
     /// Uppercase names are grouped before lowercase names, with case-insensitive
@@ -2673,25 +2749,7 @@ mod tests {
 
     #[perf]
     fn test_compare_numeric_segments() {
-        // Helper function to create peekable iterators and test
-        fn compare(a: &str, b: &str) -> Ordering {
-            let mut a_iter = a.chars().peekable();
-            let mut b_iter = b.chars().peekable();
-
-            let result = compare_numeric_segments(&mut a_iter, &mut b_iter);
-
-            // Verify iterators advanced correctly
-            assert!(
-                !a_iter.next().is_some_and(|c| c.is_ascii_digit()),
-                "Iterator a should have consumed all digits"
-            );
-            assert!(
-                !b_iter.next().is_some_and(|c| c.is_ascii_digit()),
-                "Iterator b should have consumed all digits"
-            );
-
-            result
-        }
+        let compare = compare_numeric_segments;
 
         // Basic numeric comparisons
         assert_eq!(compare("0", "0"), Ordering::Equal);
@@ -2729,14 +2787,11 @@ mod tests {
             Ordering::Greater
         );
 
-        // Iterator advancement verification
-        let mut a_iter = "123abc".chars().peekable();
-        let mut b_iter = "456def".chars().peekable();
-
-        compare_numeric_segments(&mut a_iter, &mut b_iter);
-
-        assert_eq!(a_iter.collect::<String>(), "abc");
-        assert_eq!(b_iter.collect::<String>(), "def");
+        // Digit runs are split off before comparison
+        assert_eq!(split_leading_run("123abc", true), ("123", "abc"));
+        assert_eq!(split_leading_run("abc123", false), ("abc", "123"));
+        assert_eq!(split_leading_run("abc", true), ("", "abc"));
+        assert_eq!(split_leading_run("123", false), ("", "123"));
     }
 
     #[perf]
@@ -2973,6 +3028,189 @@ mod tests {
         );
     }
 
+    fn collation_for(tag: &str) -> Collation {
+        Collation::new(&Locale::try_from_str(tag).expect("test locale should be valid BCP-47"))
+    }
+
+    fn sorted_with(tag: &str, names: &[&'static str]) -> Vec<&'static str> {
+        let collation = collation_for(tag);
+        let mut names = names.to_vec();
+
+        names.sort_by(|a, b| natural_sort_in(&collation, a, b));
+
+        names
+    }
+
+    /// Accented letters must sort next to their base letter rather than after `z`.
+    /// This is the ordering reported as broken in zed-industries/zed#48865.
+    #[perf]
+    fn test_natural_sort_accents_sort_near_base_letter() {
+        assert_eq!(
+            sorted_with("und", &["z", "u", "o", "ö", "a"]),
+            vec!["a", "o", "ö", "u", "z"]
+        );
+        assert_eq!(
+            sorted_with("de-DE", &["z", "u", "o", "ö", "a"]),
+            vec!["a", "o", "ö", "u", "z"]
+        );
+
+        let collation = collation_for("und");
+        assert_eq!(natural_sort_in(&collation, "a", "ä"), Ordering::Less);
+        assert_eq!(natural_sort_in(&collation, "ä", "b"), Ordering::Less);
+        assert_eq!(natural_sort_in(&collation, "u", "ü"), Ordering::Less);
+        assert_eq!(natural_sort_in(&collation, "e", "é"), Ordering::Less);
+        assert_eq!(natural_sort_in(&collation, "é", "f"), Ordering::Less);
+    }
+
+    /// French orders each accented letter directly after the letter it decorates, and orders the
+    /// accents themselves acute, grave, circumflex, diaeresis.
+    #[perf]
+    fn test_natural_sort_french_alphabet() {
+        let shuffled = [
+            "ï", "a", "ç", "e", "é", "b", "à", "ê", "c", "î", "d", "è", "ë",
+        ];
+        let expected = vec![
+            "a", "à", "b", "c", "ç", "d", "e", "é", "è", "ê", "ë", "î", "ï",
+        ];
+
+        assert_eq!(sorted_with("fr-FR", &shuffled), expected);
+        assert_eq!(sorted_with("fr-CA", &shuffled), expected);
+        assert_eq!(sorted_with("fr-FR", &shuffled).concat(), "aàbcçdeéèêëîï");
+    }
+
+    /// Metropolitan and Canadian French disagree about accent ordering: Canadian French keeps
+    /// the traditional rule of comparing accents from the end of the word backwards, so `côte`
+    /// sorts before `coté` there but after it in France.
+    #[perf]
+    fn test_natural_sort_french_accent_direction_is_locale_dependent() {
+        let names = ["côté.txt", "coté.txt", "cote.txt", "côte.txt"];
+
+        assert_eq!(
+            sorted_with("fr-FR", &names),
+            vec!["cote.txt", "coté.txt", "côte.txt", "côté.txt"]
+        );
+        assert_eq!(
+            sorted_with("fr-CA", &names),
+            vec!["cote.txt", "côte.txt", "coté.txt", "côté.txt"]
+        );
+    }
+
+    /// An accent difference must outrank a case difference, and case must still break ties
+    /// between names that are otherwise identical.
+    #[perf]
+    fn test_natural_sort_french_accents_outrank_case() {
+        assert_eq!(
+            sorted_with("fr-FR", &["Étude.md", "etude.md", "étude.md", "Etude.md"]),
+            vec!["etude.md", "Etude.md", "étude.md", "Étude.md"]
+        );
+
+        let collation = collation_for("fr-FR");
+        assert_eq!(natural_sort_in(&collation, "é", "É"), Ordering::Less);
+        assert_eq!(
+            natural_sort_in(&collation, "École", "ecole"),
+            Ordering::Greater
+        );
+    }
+
+    /// Accents and numeric segments must compose: the accent decides the name, and the number
+    /// only decides between names that share one.
+    #[perf]
+    fn test_natural_sort_french_with_numbers() {
+        assert_eq!(
+            sorted_with(
+                "fr-FR",
+                &["étape10.md", "étape2.md", "étape1.md", "etape3.md"]
+            ),
+            vec!["etape3.md", "étape1.md", "étape2.md", "étape10.md"]
+        );
+    }
+
+    /// The expectations reported in zed-industries/zed#48865: under a German locale `ö` falls
+    /// between `o` and `u`, while under a Swedish locale it is the last letter of the alphabet.
+    /// Both are driven from POSIX-style tags, the form the OS actually reports.
+    #[perf]
+    fn test_natural_sort_matches_reported_locale_expectations() {
+        let letters = ["z", "u", "ö", "o", "ä", "å", "a"];
+
+        let german = Collation::new(&parse_locale_tag("de_DE.UTF-8"));
+        let mut sorted = letters.to_vec();
+        sorted.sort_by(|a, b| natural_sort_in(&german, a, b));
+        assert_eq!(sorted, vec!["a", "å", "ä", "o", "ö", "u", "z"]);
+
+        let swedish = Collation::new(&parse_locale_tag("sv_SE.UTF-8"));
+        let mut sorted = letters.to_vec();
+        sorted.sort_by(|a, b| natural_sort_in(&swedish, a, b));
+        assert_eq!(sorted, vec!["a", "o", "u", "z", "å", "ä", "ö"]);
+
+        // The previous locale-independent ordering, still reachable as `sort_order: "unicode"`,
+        // ranks by codepoint. It is not the Swedish alphabet either: it disagrees with Swedish
+        // about `å` and `ä`, so it only looked correct for Swedish by coincidence.
+        let mut sorted = letters.to_vec();
+        sorted.sort_by(|a, b| compare_strings(a, b, SortOrder::Unicode));
+        assert_eq!(sorted, vec!["a", "o", "u", "z", "ä", "å", "ö"]);
+    }
+
+    /// Swedish places `å`, `ä`, and `ö` at the end of the alphabet, after `z`. This is the
+    /// case that a locale-independent fix (such as stripping accents) would get wrong.
+    #[perf]
+    fn test_natural_sort_is_locale_dependent() {
+        assert_eq!(
+            sorted_with("sv-SE", &["z", "u", "o", "ö", "ä", "a"]),
+            vec!["a", "o", "u", "z", "ä", "ö"]
+        );
+
+        let swedish = collation_for("sv-SE");
+        let german = collation_for("de-DE");
+        assert_eq!(natural_sort_in(&swedish, "z", "ö"), Ordering::Less);
+        assert_eq!(natural_sort_in(&german, "z", "ö"), Ordering::Greater);
+    }
+
+    /// Collation must not disturb the numeric and case rules the sort already guarantees.
+    #[perf]
+    fn test_natural_sort_accents_with_numbers_and_case() {
+        let collation = collation_for("de-DE");
+
+        assert_eq!(
+            sorted_with("de-DE", &["öl10.txt", "öl2.txt", "öl1.txt"]),
+            vec!["öl1.txt", "öl2.txt", "öl10.txt"]
+        );
+
+        // Case is still only a final tie-breaker, so it never outranks a later difference.
+        assert_eq!(natural_sort_in(&collation, "Öl1", "öl2"), Ordering::Less);
+        assert_eq!(natural_sort_in(&collation, "ö", "Ö"), Ordering::Less);
+        assert_eq!(natural_sort_in(&collation, "Ö", "ö"), Ordering::Greater);
+
+        // Precomposed and decomposed spellings of the same name are equal under collation,
+        // so the codepoint tie-breaker keeps the ordering total and stable.
+        assert_eq!(natural_sort_in(&collation, "ö", "o\u{308}"), Ordering::Less);
+        assert_ne!(
+            natural_sort_in(&collation, "ö", "o\u{308}"),
+            Ordering::Equal
+        );
+    }
+
+    #[perf]
+    fn test_parse_locale_tag_accepts_posix_tags() {
+        // sys_locale reports POSIX-style tags on some platforms; they must still resolve
+        // to the right tailoring rather than silently falling back to the root locale.
+        for tag in ["de_DE.UTF-8", "de-DE", "de_DE", "de_DE@euro"] {
+            assert_eq!(
+                parse_locale_tag(tag).to_string(),
+                "de-DE",
+                "failed to parse {tag:?}"
+            );
+        }
+
+        assert_eq!(parse_locale_tag("sv_SE.UTF-8").to_string(), "sv-SE");
+        assert_eq!(parse_locale_tag("C").to_string(), "und");
+        assert_eq!(parse_locale_tag("").to_string(), "und");
+
+        // A tag that resolves to the root locale must still order accents sensibly.
+        let root = Collation::new(&parse_locale_tag("C"));
+        assert_eq!(natural_sort_in(&root, "o", "ö"), Ordering::Less);
+        assert_eq!(natural_sort_in(&root, "ö", "z"), Ordering::Less);
+    }
+
     #[perf]
     fn test_natural_sort_case_sensitive() {
         // Numerically smaller values come first.
@@ -2999,17 +3237,17 @@ mod tests {
         assert_eq!(natural_sort("", "a"), Ordering::Less);
         assert_eq!(natural_sort("a", ""), Ordering::Greater);
 
-        // Special characters
-        assert_eq!(natural_sort("file-1", "file_1"), Ordering::Less);
-        assert_eq!(natural_sort("file.1", "file_1"), Ordering::Less);
+        // Special characters follow Unicode collation order, which groups punctuation by
+        // category (space, then connector, then dash, then other) rather than by codepoint.
         assert_eq!(natural_sort("file 1", "file_1"), Ordering::Less);
+        assert_eq!(natural_sort("file_1", "file-1"), Ordering::Less);
+        assert_eq!(natural_sort("file-1", "file.1"), Ordering::Less);
 
         // Unicode characters
-        // 9312 vs 9313
         assert_eq!(natural_sort("file①", "file②"), Ordering::Less);
-        // 9321 vs 9313
-        assert_eq!(natural_sort("file⑩", "file②"), Ordering::Greater);
-        // 28450 vs 23383
+        // Collation expands a circled ten into the digits "1" and "0", so it sorts against
+        // a circled two the same way "10" sorts against "2" character by character.
+        assert_eq!(natural_sort("file⑩", "file②"), Ordering::Less);
         assert_eq!(natural_sort("file漢", "file字"), Ordering::Greater);
 
         // Mixed alphanumeric with special chars

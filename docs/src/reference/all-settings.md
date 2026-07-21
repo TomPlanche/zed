@@ -5343,7 +5343,7 @@ Run the {#action theme_selector::Toggle} action in the command palette to see a 
 
 **Options**
 
-1. Case-insensitive natural sort with lowercase preferred in ties. Numbers in file names are compared by their numeric value (e.g., `file2` sorts before `file10`). Names that differ only in casing are sorted with lowercase first (e.g., `apple` before `Apple`).
+1. Case-insensitive natural sort with lowercase preferred in ties. Numbers in file names are compared by their numeric value (e.g., `file2` sorts before `file10`). Names that differ only in casing are sorted with lowercase first (e.g., `apple` before `Apple`). Letters are ordered using the system locale, so accented letters sort where speakers of that language expect them (e.g., `ö` sorts after `o` in German, but after `z` in Swedish).
 
 ```json [settings]
 {
